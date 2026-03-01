@@ -412,6 +412,14 @@ class AzureTTSProviderConfig(BaseModel):
     target_sample_rate_hz: int = Field(default=8000)
     chunk_size_ms: int = Field(default=20)
     request_timeout_sec: float = Field(default=15.0)
+    # Streaming: read response in chunks as they arrive instead of waiting for
+    # the full audio. Reduces time-to-first-audio-chunk significantly.
+    streaming: bool = Field(default=True)
+    # SSML prosody controls (applied via <prosody> tag in generated SSML)
+    # pitch: relative shift e.g. "+10%", "-5%", "high", "low", "default"
+    prosody_pitch: Optional[str] = Field(default=None)
+    # rate: speaking speed e.g. "slow", "medium", "fast", "+20%", "0.8"
+    prosody_rate: Optional[str] = Field(default=None)
 
 
 class MCPToolConfig(BaseModel):

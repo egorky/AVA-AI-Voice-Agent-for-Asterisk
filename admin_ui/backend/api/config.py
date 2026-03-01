@@ -1014,7 +1014,11 @@ async def test_provider_connection(request: ProviderTestRequest):
                     for line in f:
                         line = line.strip()
                         if line.startswith(f"{key_name}="):
-                            return line.split('=', 1)[1].strip()
+                            value = line.split('=', 1)[1].strip()
+                            # Strip surrounding single or double quotes (common .env convention)
+                            if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+                                value = value[1:-1]
+                            return value
             return ''
         
         # Helper to substitute environment variables in config values

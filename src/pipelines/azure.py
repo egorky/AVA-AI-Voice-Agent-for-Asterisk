@@ -120,8 +120,14 @@ def _make_tts_headers(api_key: str, output_format: str) -> Dict[str, str]:
     }
 
 
-def _build_ssml(text: str, voice_name: str, language: str) -> str:
-    """Build a minimal SSML document for Azure TTS."""
+def _build_ssml(
+    text: str,
+    voice_name: str,
+    language: str,
+    prosody_pitch: Optional[str] = None,
+    prosody_rate: Optional[str] = None,
+) -> str:
+    """Build a minimal SSML document for Azure TTS, with optional prosody controls."""
     # Derive xml:lang from voice_name locale prefix (e.g. "en-US-JennyNeural" -> "en-US")
     lang = language or "-".join(voice_name.split("-")[:2]) if "-" in voice_name else "en-US"
     safe_text = (
@@ -132,9 +138,19 @@ def _build_ssml(text: str, voice_name: str, language: str) -> str:
         .replace('"', "&quot;")
         .replace("'", "&apos;")
     )
+    # Build optional <prosody> wrapper
+    prosody_attrs = []
+    if prosody_pitch:
+        prosody_attrs.append(f"pitch='{prosody_pitch}'")
+    if prosody_rate:
+        prosody_attrs.append(f"rate='{prosody_rate}'")
+    if prosody_attrs:
+        inner = f"<prosody {' '.join(prosody_attrs)}>{safe_text}</prosody>"
+    else:
+        inner = safe_text
     return (
         f"<speak version='1.0' xml:lang='{lang}'>"
-        f"<voice name='{voice_name}'>{safe_text}</voice>"
+        f"<voice name='{voice_name}'>{inner}</voice>"
         f"</speak>"
     )
 
@@ -639,7 +655,13 @@ class AzureTTSAdapter(TTSComponent):
         output_format = str(merged.get("output_format") or self._provider_defaults.output_format)
         timeout_sec = float(merged.get("request_timeout_sec", self._provider_defaults.request_timeout_sec))
 
-        ssml = _build_ssml(text, voice_name, language)
+        ssml = _build_ssml(
+            text,
+            voice_name,
+            language,
+            prosody_pitch=merged.get("prosody_pitch") or None,
+            prosody_rate=merged.get("prosody_rate") or None,
+        )
         headers = _make_tts_headers(api_key, output_format)
 
         logger.info(
@@ -651,17 +673,18 @@ class AzureTTSAdapter(TTSComponent):
         )
 
         started_at = time.perf_counter()
+        use_streaming = bool(merged.get("streaming", self._provider_defaults.streaming))
+
         async with self._session.post(
             url,
             data=ssml.encode("utf-8"),
             headers=headers,
             timeout=aiohttp.ClientTimeout(total=timeout_sec),
         ) as resp:
-            raw = await resp.read()
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-
             if resp.status >= 400:
+                raw = await resp.read()
                 body_text = raw.decode("utf-8", errors="ignore")
+                latency_ms = (time.perf_counter() - started_at) * 1000.0
                 logger.error(
                     "Azure TTS synthesis failed",
                     call_id=call_id,
@@ -672,8 +695,42 @@ class AzureTTSAdapter(TTSComponent):
                     f"Azure TTS request failed (status {resp.status}): {body_text[:256]}"
                 )
 
-        # Decode response audio to PCM16 LE (or mulaw if raw-mulaw format)
-        audio_bytes, source_rate, native_encoding = _decode_tts_audio(raw, output_format)
+            latency_ms = (time.perf_counter() - started_at) * 1000.0
+
+            if use_streaming:
+                # Stream chunks as they arrive from Azure — minimises time-to-first-audio
+                chunk_ms = int(merged.get("chunk_size_ms", self._chunk_size_ms))
+                first_chunk = True
+                async for raw_chunk in resp.content.iter_chunked(4096):
+                    if not raw_chunk:
+                        continue
+                    if first_chunk:
+                        logger.info(
+                            "Azure TTS first chunk received (streaming)",
+                            call_id=call_id,
+                            latency_ms=round(latency_ms, 2),
+                            voice=voice_name,
+                        )
+                        first_chunk = False
+                    # Decode the incoming chunk (may be partial WAV/PCM)
+                    audio_bytes, source_rate, native_encoding = _decode_tts_audio(raw_chunk, output_format)
+                    target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
+                    target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
+                    if native_encoding == "mulaw" and target_encoding == "mulaw":
+                        converted = audio_bytes
+                    elif native_encoding in ("pcm16", "pcm"):
+                        if source_rate != target_rate:
+                            audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                        converted = convert_pcm16le_to_target_format(audio_bytes, target_encoding)
+                    else:
+                        converted = audio_bytes
+                    for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
+                        if chunk:
+                            yield chunk
+                return
+
+            # Non-streaming: read full response then yield
+            raw = await resp.read()
 
         target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
         target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
@@ -758,6 +815,24 @@ class AzureTTSAdapter(TTSComponent):
                     "request_timeout_sec",
                     self._pipeline_defaults.get("request_timeout_sec", self._provider_defaults.request_timeout_sec),
                 )
+            ),
+            "streaming": bool(
+                runtime_options.get(
+                    "streaming",
+                    self._pipeline_defaults.get("streaming", self._provider_defaults.streaming),
+                )
+            ),
+            "prosody_pitch": (
+                runtime_options.get(
+                    "prosody_pitch",
+                    self._pipeline_defaults.get("prosody_pitch", self._provider_defaults.prosody_pitch),
+                ) or None
+            ),
+            "prosody_rate": (
+                runtime_options.get(
+                    "prosody_rate",
+                    self._pipeline_defaults.get("prosody_rate", self._provider_defaults.prosody_rate),
+                ) or None
             ),
         }
 
