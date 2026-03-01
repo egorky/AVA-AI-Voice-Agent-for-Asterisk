@@ -126,10 +126,11 @@ def _build_ssml(
     language: str,
     prosody_pitch: Optional[str] = None,
     prosody_rate: Optional[str] = None,
+    lang_tag: Optional[str] = None,
 ) -> str:
-    """Build a minimal SSML document for Azure TTS, with optional prosody controls."""
+    """Build a minimal SSML document for Azure TTS, with optional prosody and lang controls."""
     # Derive xml:lang from voice_name locale prefix (e.g. "en-US-JennyNeural" -> "en-US")
-    lang = language or "-".join(voice_name.split("-")[:2]) if "-" in voice_name else "en-US"
+    lang = language or ("-".join(voice_name.split("-")[:2]) if "-" in voice_name else "en-US")
     safe_text = (
         text
         .replace("&", "&amp;")
@@ -148,6 +149,9 @@ def _build_ssml(
         inner = f"<prosody {' '.join(prosody_attrs)}>{safe_text}</prosody>"
     else:
         inner = safe_text
+    # For multilingual voices, wrap with <lang xml:lang="..."> to specify spoken language
+    if lang_tag:
+        inner = f"<lang xml:lang='{lang_tag}'>{inner}</lang>"
     return (
         f"<speak version='1.0' xml:lang='{lang}'>"
         f"<voice name='{voice_name}'>{inner}</voice>"
@@ -661,6 +665,7 @@ class AzureTTSAdapter(TTSComponent):
             language,
             prosody_pitch=merged.get("prosody_pitch") or None,
             prosody_rate=merged.get("prosody_rate") or None,
+            lang_tag=merged.get("lang_tag") or None,
         )
         headers = _make_tts_headers(api_key, output_format)
 
@@ -828,9 +833,17 @@ class AzureTTSAdapter(TTSComponent):
                 "voice_name",
                 self._pipeline_defaults.get("voice_name", self._provider_defaults.voice_name),
             ),
-            "language": runtime_options.get(
-                "language",
-                self._pipeline_defaults.get("language", ""),
+            "language": (
+                runtime_options.get(
+                    "language",
+                    self._pipeline_defaults.get("language", self._provider_defaults.language or ""),
+                ) or ""
+            ),
+            "lang_tag": (
+                runtime_options.get(
+                    "lang_tag",
+                    self._pipeline_defaults.get("lang_tag", self._provider_defaults.lang_tag),
+                ) or None
             ),
             "output_format": runtime_options.get(
                 "output_format",

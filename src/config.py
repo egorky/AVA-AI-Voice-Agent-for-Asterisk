@@ -403,6 +403,14 @@ class AzureTTSProviderConfig(BaseModel):
     tts_base_url: Optional[str] = Field(default=None)
     # Neural voice name, e.g. "en-US-JennyNeural", "es-ES-AlvaroNeural"
     voice_name: str = Field(default="en-US-JennyNeural")
+    # Base language for xml:lang on <speak> element.
+    # If None, auto-derived from voice name (e.g. "en-US-JennyNeural" → "en-US").
+    language: Optional[str] = Field(default=None)
+    # Target language for SSML <lang xml:lang="..."> element.
+    # Use this for multilingual voices to specify the spoken language of the text,
+    # e.g. "es-MX" when using a Chinese multilingual voice to speak Spanish.
+    # When set, SSML becomes: <voice><lang xml:lang="lang_tag">text</lang></voice>
+    lang_tag: Optional[str] = Field(default=None)
     # Azure output audio format header value (X-Microsoft-OutputFormat).
     # PCM-based formats (riff-*) are decoded natively; raw-8khz-mulaw is used directly.
     # See: https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech

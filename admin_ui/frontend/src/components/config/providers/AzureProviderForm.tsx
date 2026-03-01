@@ -247,6 +247,48 @@ const AzureProviderForm: React.FC<AzureProviderFormProps> = ({ config, onChange 
                             </p>
                         </div>
 
+                        {/* Base language (xml:lang on <speak>) */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Base Language <span className="text-muted-foreground text-xs font-normal">(optional)</span></label>
+                            <input
+                                type="text"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.language || ''}
+                                onChange={(e) => handleChange('language', e.target.value || null)}
+                                placeholder="Auto (derived from voice name, e.g. en-US)"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                BCP-47 locale for the SSML <code>xml:lang</code> attribute on <code>&lt;speak&gt;</code>.
+                                Leave empty to auto-derive from the voice name (e.g. <code>zh-CN-XiaochenMultilingualNeural</code> → <code>zh-CN</code>).
+                            </p>
+                        </div>
+
+                        {/* Multilingual lang tag (<lang xml:lang="...">) */}
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium">Multilingual Target Language <span className="text-muted-foreground text-xs font-normal">(optional)</span></label>
+                            <input
+                                type="text"
+                                className="w-full p-2 rounded border border-input bg-background"
+                                value={config.lang_tag || ''}
+                                onChange={(e) => handleChange('lang_tag', e.target.value || null)}
+                                placeholder="e.g. es-MX, en-US, fr-FR"
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                For multilingual neural voices. When set, the text is wrapped in{' '}
+                                <code>&lt;lang xml:lang="…"&gt;</code> inside the SSML, telling Azure which language to speak —
+                                even if the voice's native locale is different.
+                                Example: voice <code>zh-CN-XiaochenMultilingualNeural</code> + lang tag <code>es-MX</code>{' '}
+                                will speak Spanish with a multilingual Chinese voice.{' '}
+                                <a
+                                    href="https://learn.microsoft.com/azure/ai-services/speech-service/speech-synthesis-markup-voice#multilingual-voices"
+                                    target="_blank" rel="noopener noreferrer"
+                                    className="text-primary underline"
+                                >
+                                    Learn more
+                                </a>
+                            </p>
+                        </div>
+
                         {/* Output Format */}
                         <div className="space-y-2">
                             <label className="text-sm font-medium">Output Audio Format</label>
