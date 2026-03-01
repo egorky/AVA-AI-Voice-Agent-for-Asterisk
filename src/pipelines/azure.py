@@ -698,8 +698,26 @@ class AzureTTSAdapter(TTSComponent):
             latency_ms = (time.perf_counter() - started_at) * 1000.0
 
             if use_streaming:
-                # Stream chunks as they arrive from Azure — minimises time-to-first-audio
+                # Stream chunks as they arrive from Azure — minimises time-to-first-audio.
+                # Azure sends the audio as a continuous byte stream;
+                # for RIFF formats the 44-byte WAV header is at the very start,
+                # the rest is raw PCM.  We strip the header from the accumulator
+                # and then forward PCM chunks as they arrive.
+                target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
+                target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
                 chunk_ms = int(merged.get("chunk_size_ms", self._chunk_size_ms))
+
+                fmt_lower = output_format.lower()
+                is_riff = fmt_lower.startswith("riff-")
+                is_raw_mulaw = "mulaw" in fmt_lower and fmt_lower.startswith("raw-")
+
+                # For RIFF formats we need to consume the WAV header (44 bytes) first.
+                # We buffer incoming network bytes until we have the full header,
+                # then forward raw PCM from that point onwards.
+                header_consumed = not is_riff  # raw formats have no header to skip
+                WAV_HEADER_SIZE = 44
+                header_buf = bytearray()
+
                 first_chunk = True
                 async for raw_chunk in resp.content.iter_chunked(4096):
                     if not raw_chunk:
@@ -712,18 +730,39 @@ class AzureTTSAdapter(TTSComponent):
                             voice=voice_name,
                         )
                         first_chunk = False
-                    # Decode the incoming chunk (may be partial WAV/PCM)
-                    audio_bytes, source_rate, native_encoding = _decode_tts_audio(raw_chunk, output_format)
-                    target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
-                    target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
-                    if native_encoding == "mulaw" and target_encoding == "mulaw":
-                        converted = audio_bytes
-                    elif native_encoding in ("pcm16", "pcm"):
+
+                    if not header_consumed:
+                        header_buf.extend(raw_chunk)
+                        if len(header_buf) < WAV_HEADER_SIZE:
+                            continue  # wait for more bytes
+                        # Header complete — extract the PCM payload
+                        pcm_payload = bytes(header_buf[WAV_HEADER_SIZE:])
+                        header_consumed = True
+                    else:
+                        pcm_payload = raw_chunk
+
+                    if not pcm_payload:
+                        continue
+
+                    if is_raw_mulaw and target_encoding == "mulaw":
+                        # Already in target format — yield directly
+                        converted = pcm_payload
+                    else:
+                        # PCM16 LE raw bytes — determine source sample rate from format string
+                        audio_bytes = pcm_payload
+                        fmt_l = fmt_lower
+                        if "8khz" in fmt_l:
+                            source_rate = 8000
+                        elif "16khz" in fmt_l:
+                            source_rate = 16000
+                        elif "24khz" in fmt_l:
+                            source_rate = 24000
+                        else:
+                            source_rate = 8000
                         if source_rate != target_rate:
                             audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
                         converted = convert_pcm16le_to_target_format(audio_bytes, target_encoding)
-                    else:
-                        converted = audio_bytes
+
                     for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
                         if chunk:
                             yield chunk
@@ -731,6 +770,9 @@ class AzureTTSAdapter(TTSComponent):
 
             # Non-streaming: read full response then yield
             raw = await resp.read()
+
+        # Decode full response audio
+        audio_bytes, source_rate, native_encoding = _decode_tts_audio(raw, output_format)
 
         target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
         target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
