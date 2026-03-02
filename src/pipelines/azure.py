@@ -24,7 +24,7 @@ import time
 import uuid
 import wave
 from io import BytesIO
-from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple, List
+from typing import Any, AsyncIterator, Callable, Dict, Optional, Tuple, List, Iterable
 
 try:
     import aiohttp
