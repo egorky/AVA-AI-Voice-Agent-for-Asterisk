@@ -281,7 +281,7 @@ class AzureSTTFastAdapter(STTComponent):
             self._vad = webrtcvad.Vad(1)  # Moderate aggressiveness (0-3)
         self._is_speaking = False
         self._silence_frames = 0
-        self._max_silence_frames = 50  # ~1 sec at 20ms frames
+        self._max_silence_frames = 15  # ~450ms at 30ms frames
         self._buffer_lock = threading.Lock()
         self._min_speech_frames_threshold = 5
 
@@ -848,142 +848,124 @@ class AzureTTSAdapter(TTSComponent):
         started_at = time.perf_counter()
         use_streaming = bool(merged.get("streaming", self._provider_defaults.streaming))
 
-        async with self._session.post(
-            url,
-            data=ssml.encode("utf-8"),
-            headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout_sec),
-        ) as resp:
-            if resp.status >= 400:
-                raw = await resp.read()
-                body_text = raw.decode("utf-8", errors="ignore")
-                latency_ms = (time.perf_counter() - started_at) * 1000.0
-                logger.error(
-                    "Azure TTS synthesis failed",
-                    call_id=call_id,
-                    status=resp.status,
-                    body_preview=body_text[:200],
-                )
-                raise RuntimeError(
-                    f"Azure TTS request failed (status {resp.status}): {body_text[:256]}"
-                )
+        if not speechsdk:
+            raise RuntimeError("Azure TTS real-time streaming requires 'azure-cognitiveservices-speech' package")
 
-            latency_ms = (time.perf_counter() - started_at) * 1000.0
-
-            if use_streaming:
-                # Stream chunks as they arrive from Azure — minimises time-to-first-audio.
-                # Azure sends the audio as a continuous byte stream;
-                # for RIFF formats the 44-byte WAV header is at the very start,
-                # the rest is raw PCM.  We strip the header from the accumulator
-                # and then forward PCM chunks as they arrive.
-                target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
-                target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
-                chunk_ms = int(merged.get("chunk_size_ms", self._chunk_size_ms))
-
-                fmt_lower = output_format.lower()
-                is_riff = fmt_lower.startswith("riff-")
-                is_raw_mulaw = "mulaw" in fmt_lower and fmt_lower.startswith("raw-")
-
-                # For RIFF formats we need to consume the WAV header (44 bytes) first.
-                # We buffer incoming network bytes until we have the full header,
-                # then forward raw PCM from that point onwards.
-                header_consumed = not is_riff  # raw formats have no header to skip
-                WAV_HEADER_SIZE = 44
-                header_buf = bytearray()
-                leftover_byte: bytes = b""
-
-                first_chunk = True
-                async for raw_chunk in resp.content.iter_chunked(4096):
-                    if not raw_chunk:
-                        continue
-                    if first_chunk:
-                        logger.info(
-                            "Azure TTS first chunk received (streaming)",
-                            call_id=call_id,
-                            latency_ms=round(latency_ms, 2),
-                            voice=voice_name,
-                        )
-                        first_chunk = False
-                        
-                    if leftover_byte:
-                        raw_chunk = leftover_byte + raw_chunk
-                        leftover_byte = b""
-
-                    if not header_consumed:
-                        header_buf.extend(raw_chunk)
-                        if len(header_buf) < WAV_HEADER_SIZE:
-                            continue  # wait for more bytes
-                        # Header complete — extract the PCM payload
-                        pcm_payload = bytes(header_buf[WAV_HEADER_SIZE:])
-                        header_consumed = True
-                    else:
-                        pcm_payload = raw_chunk
-                        
-                    if len(pcm_payload) % 2 != 0:
-                        leftover_byte = pcm_payload[-1:]
-                        pcm_payload = pcm_payload[:-1]
-
-                    if not pcm_payload:
-                        continue
-
-                    if is_raw_mulaw and target_encoding == "mulaw":
-                        # Already in target format — yield directly
-                        converted = pcm_payload
-                    else:
-                        # PCM16 LE raw bytes — determine source sample rate from format string
-                        audio_bytes = pcm_payload
-                        fmt_l = fmt_lower
-                        if "8khz" in fmt_l:
-                            source_rate = 8000
-                        elif "16khz" in fmt_l:
-                            source_rate = 16000
-                        elif "24khz" in fmt_l:
-                            source_rate = 24000
-                        else:
-                            source_rate = 8000
-                        if source_rate != target_rate:
-                            audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
-                        converted = _to_target_format(audio_bytes, target_encoding)
-
-                    for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
-                        if chunk:
-                            yield chunk
-                return
-
-            # Non-streaming: read full response then yield
-            raw = await resp.read()
-
-        # Decode full response audio
-        audio_bytes, source_rate, native_encoding = _decode_tts_audio(raw, output_format)
+        format_map = {
+            "riff-8khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Riff8Khz16BitMonoPcm,
+            "riff-16khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm,
+            "riff-24khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Riff24Khz16BitMonoPcm,
+            "raw-8khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Raw8Khz16BitMonoPcm,
+            "raw-16khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Raw16Khz16BitMonoPcm,
+            "raw-24khz-16bit-mono-pcm": speechsdk.SpeechSynthesisOutputFormat.Raw24Khz16BitMonoPcm,
+            "audio-16khz-32kbitrate-mono-mp3": speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3,
+            "audio-24khz-48kbitrate-mono-mp3": speechsdk.SpeechSynthesisOutputFormat.Audio24Khz48KBitRateMonoMp3,
+        }
+        fmt_lower = output_format.lower()
+        synth_output_fmt = format_map.get(fmt_lower, speechsdk.SpeechSynthesisOutputFormat.Riff8Khz16BitMonoPcm)
 
         target_encoding = str(merged.get("target_encoding") or self._provider_defaults.target_encoding)
         target_rate = int(merged.get("target_sample_rate_hz") or self._provider_defaults.target_sample_rate_hz)
-
-        if native_encoding == "mulaw" and target_encoding == "mulaw":
-            # Already in mulaw at 8 kHz — yield directly
-            converted = audio_bytes
-        elif native_encoding in ("pcm16", "pcm"):
-            # Resample if needed, then convert to target encoding
-            if source_rate != target_rate:
-                audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
-            converted = _to_target_format(audio_bytes, target_encoding)
-        else:
-            # Unknown encoding — pass through as-is
-            converted = audio_bytes
-
-        logger.info(
-            "Azure TTS synthesis completed",
-            call_id=call_id,
-            output_bytes=len(converted),
-            latency_ms=round(latency_ms, 2),
-            target_encoding=target_encoding,
-            target_sample_rate=target_rate,
-        )
-
         chunk_ms = int(merged.get("chunk_size_ms", self._chunk_size_ms))
-        for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
-            if chunk:
-                yield chunk
+
+        speech_config = speechsdk.SpeechConfig(subscription=api_key, region=region)
+        speech_config.set_speech_synthesis_output_format(synth_output_fmt)
+
+        pull_stream = speechsdk.audio.PullAudioOutputStream()
+        audio_config = speechsdk.audio.AudioOutputConfig(stream=pull_stream)
+        synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+
+        result_future = synthesizer.start_speaking_ssml_async(ssml)
+
+        def _read_chunk() -> bytes:
+            return pull_stream.read(4096)
+
+        is_riff = "riff" in fmt_lower
+        is_raw_mulaw = "mulaw" in fmt_lower and "raw" in fmt_lower
+        header_consumed = not is_riff
+        WAV_HEADER_SIZE = 44
+        header_buf = bytearray()
+        leftover_byte: bytes = b""
+
+        first_chunk = True
+
+        try:
+            while True:
+                raw_chunk = await asyncio.to_thread(_read_chunk)
+                if not raw_chunk:
+                    break
+
+                if first_chunk:
+                    latency_ms = (time.perf_counter() - started_at) * 1000.0
+                    logger.info(
+                        "Azure TTS first chunk received (streaming)",
+                        call_id=call_id,
+                        latency_ms=round(latency_ms, 2),
+                        voice=voice_name,
+                    )
+                    first_chunk = False
+                    
+                if leftover_byte:
+                    raw_chunk = leftover_byte + raw_chunk
+                    leftover_byte = b""
+
+                if not header_consumed:
+                    header_buf.extend(raw_chunk)
+                    if len(header_buf) < WAV_HEADER_SIZE:
+                        continue
+                    pcm_payload = bytes(header_buf[WAV_HEADER_SIZE:])
+                    header_consumed = True
+                else:
+                    pcm_payload = raw_chunk
+
+                if len(pcm_payload) % 2 != 0:
+                    leftover_byte = pcm_payload[-1:]
+                    pcm_payload = pcm_payload[:-1]
+
+                if not pcm_payload:
+                    continue
+
+                if is_raw_mulaw and target_encoding == "mulaw":
+                    converted = pcm_payload
+                else:
+                    audio_bytes = pcm_payload
+                    if "8khz" in fmt_lower:
+                        source_rate = 8000
+                    elif "16khz" in fmt_lower:
+                        source_rate = 16000
+                    elif "24khz" in fmt_lower:
+                        source_rate = 24000
+                    else:
+                        source_rate = 8000
+                    if source_rate != target_rate:
+                        audio_bytes, _ = resample_audio(audio_bytes, source_rate, target_rate)
+                    converted = _to_target_format(audio_bytes, target_encoding)
+
+                for chunk in _chunk_audio(converted, target_encoding, target_rate, chunk_ms):
+                    if chunk:
+                        yield chunk
+
+            result = result_future.get()
+            if result.reason == speechsdk.ResultReason.Canceled:
+                cancellation = result.cancellation_details
+                logger.error(
+                    "Azure TTS synthesis canceled",
+                    call_id=call_id,
+                    reason=cancellation.reason,
+                    error_details=cancellation.error_details,
+                )
+            
+            logger.info(
+                "Azure TTS synthesis completed",
+                call_id=call_id,
+                latency_ms=round((time.perf_counter() - started_at) * 1000.0, 2),
+                target_encoding=target_encoding,
+                target_sample_rate=target_rate,
+            )
+        finally:
+            del synthesizer
+            del pull_stream
+            del audio_config
 
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:
