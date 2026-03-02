@@ -623,6 +623,10 @@ class AzureSTTRealtimeAdapter(STTComponent):
 
         # 2. Setup Push Stream
         # SDK expects 1 channel, 16-bit, native sample rate
+        st_fmt = options.get("stream_format", "pcm16_16k")
+        if st_fmt == "pcm16_16k" and sample_rate_hz == 8000:
+            sample_rate_hz = 16000
+        
         stream_format = speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate_hz, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
