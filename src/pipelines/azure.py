@@ -376,15 +376,7 @@ class AzureSTTFastAdapter(STTComponent):
         if not audio_to_send:
             return ""
 
-        transcript = self._parse_transcript(raw)
-        logger.info(
-            "Azure STT Fast transcript received",
-            call_id=call_id,
-            request_id=request_id,
-            latency_ms=round(latency_ms, 2),
-            transcript_preview=(transcript or "")[:80],
-        )
-        return transcript or ""
+        return await self._execute_transcription(call_id, audio_to_send, sample_rate_hz, options)
 
     async def flush_speech(self, call_id: str, options: Dict[str, Any]) -> str:
         """Force flush of any accumulated audio buffer to Azure STT."""
