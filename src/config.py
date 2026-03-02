@@ -427,7 +427,7 @@ class AzureTTSProviderConfig(BaseModel):
     # Azure output audio format header value (X-Microsoft-OutputFormat).
     # PCM-based formats (riff-*) are decoded natively; raw-8khz-mulaw is used directly.
     # See: https://learn.microsoft.com/azure/ai-services/speech-service/rest-text-to-speech
-    output_format: str = Field(default="riff-8khz-16bit-mono-pcm")
+    output_format: str = Field(default="raw-8khz-16bit-mono-pcm")
     # Downstream encoding the engine expects (ulaw | pcm | slin16)
     target_encoding: str = Field(default="mulaw")
     target_sample_rate_hz: int = Field(default=8000)

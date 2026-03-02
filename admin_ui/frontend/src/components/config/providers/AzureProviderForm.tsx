@@ -329,7 +329,7 @@ const AzureProviderForm: React.FC<AzureProviderFormProps> = ({ config, onChange 
                             <label className="text-sm font-medium">Output Audio Format</label>
                             <select
                                 className="w-full p-2 rounded border border-input bg-background"
-                                value={config.output_format || 'riff-8khz-16bit-mono-pcm'}
+                                value={config.output_format || 'raw-8khz-16bit-mono-pcm'}
                                 onChange={(e) => handleChange('output_format', e.target.value)}
                             >
                                 {AZURE_OUTPUT_FORMATS.map(f => (
