@@ -329,15 +329,57 @@ class AzureSTTFastAdapter(STTComponent):
         if not audio_pcm16:
             return ""
 
+        merged = self._compose_options(options)
+
+        if self._vad:
+            frame_ms = 30
+            bytes_per_frame = int((sample_rate_hz * 2 * frame_ms) / 1000)
+            
+            has_speech = False
+            offset = 0
+            while offset + bytes_per_frame <= len(audio_pcm16):
+                frame = audio_pcm16[offset:offset + bytes_per_frame]
+                offset += bytes_per_frame
+                try:
+                    if self._vad.is_speech(frame, sample_rate_hz):
+                        has_speech = True
+                        break
+                except Exception:
+                    pass
+
+            with self._buffer_lock:
+                self._audio_buffer.extend(audio_pcm16)
+
+                if has_speech:
+                    self._is_speaking = True
+                    self._silence_frames = 0
+                else:
+                    if self._is_speaking:
+                        self._silence_frames += max(1, len(audio_pcm16) // bytes_per_frame)
+
+                # _max_silence_frames is roughly ~1 sec of silence. At 30ms per frame, 33 frames = ~1 sec.
+                # _max_silence_frames is initialized to 50 (~1.5s).
+                if self._is_speaking and self._silence_frames >= self._max_silence_frames:
+                    audio_to_send = bytes(self._audio_buffer)
+                    self._audio_buffer.clear()
+                    self._is_speaking = False
+                    self._silence_frames = 0
+                else:
+                    return ""
+        else:
+            audio_to_send = audio_pcm16
+
+        if not audio_to_send:
+            return ""
+
         await self._ensure_session()
         assert self._session
 
-        merged = self._compose_options(options)
         api_key = merged.get("api_key") or ""
         if not api_key:
             raise RuntimeError("Azure STT Fast requires AZURE_SPEECH_KEY / api_key")
 
-        wav_bytes = _pcm16le_to_wav(audio_pcm16, sample_rate_hz)
+        wav_bytes = _pcm16le_to_wav(audio_to_send, sample_rate_hz)
         language = str(merged.get("language") or self._provider_defaults.language)
         url = str(merged.get("fast_stt_base_url") or _build_azure_stt_fast_url(merged["region"], merged.get("api_version", "2024-11-15")))
         timeout_sec = float(merged.get("request_timeout_sec", self._default_timeout))
