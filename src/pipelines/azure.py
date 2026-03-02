@@ -878,7 +878,9 @@ class AzureTTSAdapter(TTSComponent):
         result_future = synthesizer.start_speaking_ssml_async(ssml)
 
         def _read_chunk() -> bytes:
-            return pull_stream.read(4096)
+            buf = bytes(4096)
+            filled_size = pull_stream.read(buf)
+            return buf[:filled_size] if filled_size > 0 else b""
 
         is_riff = "riff" in fmt_lower
         is_raw_mulaw = "mulaw" in fmt_lower and "raw" in fmt_lower
