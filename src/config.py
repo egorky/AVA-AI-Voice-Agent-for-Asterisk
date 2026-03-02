@@ -386,6 +386,8 @@ class AzureSTTProviderConfig(BaseModel):
     # API version for Fast Transcription
     api_version: str = Field(default="2024-11-15")
     request_timeout_sec: float = Field(default=15.0)
+    # VAD silence timeout for Realtime streaming in milliseconds
+    vad_silence_timeout_ms: int = Field(default=300)
 
 
 class AzureTTSProviderConfig(BaseModel):
