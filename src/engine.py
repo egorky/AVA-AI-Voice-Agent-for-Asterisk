@@ -9646,6 +9646,14 @@ class Engine:
                                                 aborted = True
                                                 break
                                     if aborted:
+                                        # Clear pending accumulation and the transcript queue
+                                        # so the LLM doesn't process stale text from before the barge-in.
+                                        pending_segments.clear()
+                                        while not transcript_queue.empty():
+                                            try:
+                                                transcript_queue.get_nowait()
+                                            except asyncio.QueueEmpty:
+                                                break
                                         break
 
                                 # End-of-segment sentinel
