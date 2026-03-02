@@ -9046,6 +9046,7 @@ class Engine:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         # getattr fallback keeps this generic — works for any adapter, not just Azure.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                        logger.warning(f"DEBUG: TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
                         if _tts_dm_override == "stream":
                             use_streaming_playback = True
                         elif _tts_dm_override == "file":
@@ -9570,6 +9571,7 @@ class Engine:
                     if response_text:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                        logger.warning(f"DEBUG: Main TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
                         if _tts_dm_override == "stream":
                             use_streaming_playback = True
                         elif _tts_dm_override == "file":
