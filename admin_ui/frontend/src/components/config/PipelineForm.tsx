@@ -34,7 +34,7 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     const [statusLoading, setStatusLoading] = useState(false);
     const [showAdvancedSTT, setShowAdvancedSTT] = useState(false);
     const [showLlmExpert, setShowLlmExpert] = useState<boolean>(
-        () => config?.options?.llm?.tools_enabled !== undefined || Boolean(config?.options?.llm?.realtime_model)
+        () => config?.options?.llm?.tools_enabled !== undefined || Boolean(config?.options?.llm?.realtime_model) || config?.options?.llm?.aggregation_min_words !== undefined || config?.options?.llm?.aggregation_min_chars !== undefined
     );
     const [showSttExpert, setShowSttExpert] = useState<boolean>(
         () => Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0
@@ -67,10 +67,10 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     }, [config]);
 
     useEffect(() => {
-        if (config?.options?.llm?.tools_enabled !== undefined || config?.options?.llm?.realtime_model) {
+        if (config?.options?.llm?.tools_enabled !== undefined || config?.options?.llm?.realtime_model || config?.options?.llm?.aggregation_min_words !== undefined || config?.options?.llm?.aggregation_min_chars !== undefined) {
             setShowLlmExpert(true);
         }
-    }, [config?.options?.llm?.tools_enabled, config?.options?.llm?.realtime_model]);
+    }, [config?.options?.llm?.tools_enabled, config?.options?.llm?.realtime_model, config?.options?.llm?.aggregation_min_words, config?.options?.llm?.aggregation_min_chars]);
 
     useEffect(() => {
         if (Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0) {
@@ -427,6 +427,24 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                                     disabled={!showLlmExpert}
                                 />
                             )}
+                            <FormInput
+                                label="LLM Min Words Threshold"
+                                type="number"
+                                value={localConfig.options?.llm?.aggregation_min_words ?? ''}
+                                onChange={(e) => updateRoleOptions('llm', { aggregation_min_words: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                                placeholder="Auto"
+                                tooltip="Minimum words to wait before sending transcript to LLM."
+                                disabled={!showLlmExpert}
+                            />
+                            <FormInput
+                                label="LLM Min Chars Threshold"
+                                type="number"
+                                value={localConfig.options?.llm?.aggregation_min_chars ?? ''}
+                                onChange={(e) => updateRoleOptions('llm', { aggregation_min_chars: e.target.value ? parseInt(e.target.value, 10) : undefined })}
+                                placeholder="Auto"
+                                tooltip="Minimum characters to wait before sending transcript to LLM."
+                                disabled={!showLlmExpert}
+                            />
                         </div>
                         <div className="mt-2 border-t border-amber-300/30 pt-3 space-y-3">
                             <p className="text-xs text-muted-foreground">

@@ -9985,7 +9985,11 @@ class Engine:
                         return
                     words = len([w for w in aggregated.split() if w])
                     chars = len(aggregated.replace(" ", ""))
-                    threshold_met = words >= 3 or chars >= 12
+                    
+                    min_words = int((pipeline.llm_options or {}).get("aggregation_min_words", 3))
+                    min_chars = int((pipeline.llm_options or {}).get("aggregation_min_chars", 12))
+                    threshold_met = words >= min_words or chars >= min_chars
+                    
                     if not threshold_met:
                         if force:
                             pending_segments.clear()
