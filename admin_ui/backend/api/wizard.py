@@ -2213,12 +2213,16 @@ async def start_local_ai_server():
 
         for backend, arg_name in BACKEND_BUILD_ARGS.items():
             raw = env.get(arg_name)
-            if raw is not None:
-                enabled_in_env = _is_truthy(raw)
-                default_val = bool(defaults.get(backend, False))
-                if enabled_in_env and not default_val:
-                    print(f"DEBUG: Rebuild needed — {arg_name}=true but default is false")
-                    return True
+            if raw is None:
+                continue
+            enabled_in_env = _is_truthy(raw)
+            default_val = bool(defaults.get(backend, False))
+            if enabled_in_env != default_val:
+                print(
+                    f"DEBUG: Rebuild needed — {arg_name}={str(enabled_in_env).lower()} "
+                    f"but default is {str(default_val).lower()}"
+                )
+                return True
         return False
 
     try:
@@ -2307,11 +2311,72 @@ async def start_local_ai_server():
 
 @router.get("/local/server-logs")
 async def get_local_server_logs():
-    """Get local-ai-server container logs."""
+    """Get local-ai-server container logs.
+    
+    Implements hybrid approach:
+    1. If local_ai_server container exists and has logs -> return those
+    2. If not, check for active aava-update-ephemeral-* build containers -> return build logs
+    3. Fallback to log file if neither available
+    """
     import subprocess
+    import re
+    
+    def _get_updater_build_logs() -> Optional[List[str]]:
+        """Get logs from any active aava-update-ephemeral-* container (build phase)."""
+        try:
+            # Find active updater containers
+            ps_result = subprocess.run(
+                ["docker", "ps", "--filter", "name=aava-update-ephemeral", "--format", "{{.Names}}"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            containers = [c.strip() for c in ps_result.stdout.strip().split('\n') if c.strip()]
+            if not containers:
+                return None
+            
+            # Get logs from the most recent updater container
+            container_name = containers[0]
+            log_result = subprocess.run(
+                ["docker", "logs", "--tail", "50", container_name],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            raw_logs = (log_result.stdout or "") + (log_result.stderr or "")
+            if not raw_logs.strip():
+                return None
+            
+            # Parse Docker build output - extract meaningful progress lines
+            lines = raw_logs.strip().split('\n')
+            progress_lines = []
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                # Remove ANSI escape codes
+                clean_line = re.sub(r'\x1b\[[0-9;]*m', '', line)
+                # Match Docker build step patterns: "Step X/Y", "#XX [stage", buildx output
+                if re.search(r'Step \d+/\d+|#\d+\s*\[|CACHED|Pulling|Downloading|Extracting', clean_line, re.IGNORECASE):
+                    if len(clean_line) > 120:
+                        clean_line = clean_line[:117] + "..."
+                    progress_lines.append(clean_line)
+                elif any(kw in clean_line for kw in ["Building", "Starting", "Created", "Successfully", "DONE", "Image", "Sending build"]):
+                    if len(clean_line) > 120:
+                        clean_line = clean_line[:117] + "..."
+                    progress_lines.append(clean_line)
+            
+            # If filtering produced nothing, return last 15 raw lines as fallback
+            if not progress_lines:
+                fallback = [l.strip() for l in lines if l.strip()][-15:]
+                return fallback if fallback else None
+            
+            return progress_lines[-20:]
+        except Exception:
+            return None
     
     try:
-        # Get recent logs for display
+        # Primary: Get logs from local_ai_server container
         result = subprocess.run(
             ["docker", "logs", "--tail", "30", "local_ai_server"],
             capture_output=True,
@@ -2322,8 +2387,17 @@ async def get_local_server_logs():
         logs = result.stdout or result.stderr
         lines = logs.strip().split('\n') if logs else []
         
+        # If container exists but has no logs yet, check for build progress
+        if not lines or (len(lines) == 1 and not lines[0].strip()):
+            build_logs = _get_updater_build_logs()
+            if build_logs:
+                return {
+                    "logs": build_logs,
+                    "ready": False,
+                    "phase": "building"
+                }
+        
         # Check if server is ready by looking at ALL logs (not just tail)
-        # The startup message might be pushed out by connection logs
         ready_result = subprocess.run(
             ["docker", "logs", "local_ai_server"],
             capture_output=True,
@@ -2339,20 +2413,28 @@ async def get_local_server_logs():
         
         return {
             "logs": lines[-20:],
-            "ready": ready
+            "ready": ready,
+            "phase": "running" if ready else "starting"
         }
     except subprocess.TimeoutExpired:
         return {"logs": [], "ready": False, "error": "Timeout getting logs"}
     except Exception as e:
-        # Fallback: if container isn't created yet (e.g., still building), show the build/start log if present.
+        # Container doesn't exist - check if we're in build phase
+        build_logs = _get_updater_build_logs()
+        if build_logs:
+            return {
+                "logs": build_logs,
+                "ready": False,
+                "phase": "building"
+            }
+        
+        # Fallback: check log file
         try:
-            import os
-
             log_path = os.path.join(os.getenv("PROJECT_ROOT", "/app/project"), "logs", "local_ai_server_start.log")
             if os.path.exists(log_path):
                 with open(log_path, "r") as f:
                     tail = f.read().splitlines()[-50:]
-                return {"logs": tail[-20:], "ready": False, "error": str(e)}
+                return {"logs": tail[-20:], "ready": False, "phase": "unknown"}
         except Exception:
             pass
         return {"logs": [], "ready": False, "error": str(e)}
@@ -2932,6 +3014,10 @@ async def save_setup_config(config: SetupConfig):
             elif tts_model_path:
                 env_updates["LOCAL_TTS_MODEL_PATH"] = _safe_join_under_dir("/app/models/tts", tts_model_path)
 
+            # Auto-set chat_format from LLM catalog entry
+            if llm_model and llm_model.get("chat_format"):
+                env_updates["LOCAL_LLM_CHAT_FORMAT"] = llm_model["chat_format"]
+
             if config.provider == "local":
                 if config.local_llm_model == "custom_gguf_url":
                     custom_name = (config.local_llm_custom_filename or "").strip()
@@ -3303,7 +3389,12 @@ async def enable_backend(request: EnableBackendRequest):
             }
         raise HTTPException(status_code=409, detail=result["error"])
     
-    return result
+    return {
+        "job_id": result.get("job_id"),
+        "backend": result.get("backend"),
+        "estimated_seconds": result.get("estimated_seconds"),
+        "message": result.get("message"),
+    }
 
 
 @router.get("/local/backends/rebuild-status")

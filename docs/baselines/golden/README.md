@@ -10,6 +10,7 @@ This directory provides **quick reference links** for golden baselines, used in 
 - **v6.1.1 Validation Matrix**: see `v6.1.1-validation-matrix.md`
 - **v6.2.0 Validation Matrix**: see `v6.2.0-validation-matrix.md`
 - **ElevenLabs Agent**: see [`docs/contributing/references/Provider-ElevenLabs-Implementation.md`](../../contributing/references/Provider-ElevenLabs-Implementation.md)
+- **Full Local GPU** (Kroko + Qwen 2.5 + Kokoro): see `local-gpu.md`
 
 ## Purpose
 

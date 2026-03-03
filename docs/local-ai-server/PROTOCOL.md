@@ -13,11 +13,17 @@ This document describes the WebSocket API exposed by the local AI server (defaul
 
 Source of truth:
 
-- Server entrypoint: `local_ai_server/main.py` (imports `local_ai_server/server.py`)
-  - Message handling: `_handle_json_message()`, `_handle_binary_message()`
-  - Streaming STT: `_process_stt_stream()`
-  - LLM pipeline: `process_llm()`, `_emit_llm_response()`
-  - TTS pipeline: `process_tts()`, `_emit_tts_audio()`
+- WebSocket router: `local_ai_server/ws_protocol.py`
+  - Message handling: `handle_json_message()`, `handle_binary_message()`
+- Runtime/pipeline implementation: `local_ai_server/server.py`
+  - STT routing + segmentation: `_process_stt_stream*()`
+  - LLM + tool gateway: `_handle_llm_request()`, `_handle_llm_tool_request()`
+  - TTS + binary/audio metadata emission: `_handle_tts_request()`, `_emit_tts_audio()`
+- Switch/status/capabilities control plane:
+  - `local_ai_server/control_plane.py`
+  - `local_ai_server/model_manager.py`
+  - `local_ai_server/status_builder.py`
+- Protocol contract/schema generator: `local_ai_server/protocol_contract.py`
 
 ---
 
@@ -93,12 +99,22 @@ Notes:
 - `auth` → Authenticate session (if enabled); responds with `auth_response`.
 - `set_mode` → Changes session mode; responds with `mode_ready`.
 - `audio` → Base64 audio frames for STT/LLM/FULL flows (recommended: PCM16 mono @ 16 kHz).
+- `barge_in` → Clears Whisper-family STT suppression window; responds with `barge_in_ack`.
 - `llm_request` → Ask LLM with text; responds with `llm_response`.
+- `llm_tool_request` → Run tool-call parser/repair/structured gateway; responds with `llm_tool_response`.
 - `tts_request` → Synthesize TTS from text; responds with `tts_response` (base64 μ-law).
 - `reload_models` → Reload all models; responds with `reload_response`.
 - `reload_llm` → Reload only LLM; responds with `reload_response`.
 - `switch_model` → Switch backend/model paths at runtime; responds with `switch_response`.
 - `status` → Report loaded backends/models; responds with `status_response`.
+- `capabilities` → Return installed backend availability; responds with `capabilities_response`.
+- `backends` → Return built-in backend registry info; responds with `backends_response`.
+- `backend_schema` → Return config schema/availability for one backend; responds with `backend_schema_response`.
+
+Notes:
+
+- Message `type` is normalized server-side (`lower()`, trim, `-` → `_`), so `set-mode` and `set_mode` are treated the same.
+- Unknown or malformed message types are logged and ignored (no error response).
 
 ### Common fields
 
@@ -167,7 +183,34 @@ If `request_id` is set, the server emits `tts_audio` metadata before the binary 
 
 Notes:
 
-- The server uses an idle finalizer (`LOCAL_STT_IDLE_MS`, default 3000 ms) to promote a final transcript if no more audio arrives; duplicate/empty finals are suppressed per `local_ai_server/server.py`.
+- The server uses an idle finalizer (`LOCAL_STT_IDLE_MS`, default 5000 ms) to promote a final transcript if no more audio arrives; duplicate/empty finals are suppressed per `local_ai_server/server.py`.
+- For `faster_whisper` / `whisper_cpp`, STT is utterance-segmented (energy + silence endpoint) and primarily emits final transcripts (not high-frequency partials).
+- Punctuation-only non-linguistic finals (for example just `?`) are suppressed in `llm`/`full` modes to avoid LLM/TTS loops.
+
+---
+
+## Barge-In (Whisper echo guard control)
+
+When using `faster_whisper` or `whisper_cpp`, Local AI Server suppresses STT while it is transmitting TTS audio to avoid self-transcription loops. If upstream detects caller barge-in, send:
+
+```json
+{
+  "type": "barge_in",
+  "call_id": "1234-5678",
+  "request_id": "bi-1"
+}
+```
+
+Response:
+
+```json
+{
+  "type": "barge_in_ack",
+  "status": "ok",
+  "call_id": "1234-5678",
+  "request_id": "bi-1"
+}
+```
 
 ---
 
@@ -195,6 +238,54 @@ Response:
   "request_id": "q1"
 }
 ```
+
+---
+
+## LLM Tool Gateway (`llm_tool_request`)
+
+Use this endpoint when the engine already has assistant text and needs normalized tool calls.
+
+Request:
+
+```json
+{
+  "type": "llm_tool_request",
+  "text": "<tool_call>{\"name\":\"hangup_call\",\"arguments\":{\"farewell_message\":\"Goodbye\"}}</tool_call>",
+  "call_id": "1234-5678",
+  "request_id": "tool-1",
+  "tool_choice": "auto",
+  "tool_policy": "auto",
+  "allowed_tools": ["hangup_call"],
+  "tools": [{ "name": "hangup_call", "parameters": { "type": "object" } }],
+  "latest_user_text": "thanks bye"
+}
+```
+
+Response:
+
+```json
+{
+  "type": "llm_tool_response",
+  "call_id": "1234-5678",
+  "request_id": "tool-1",
+  "text": "",
+  "tool_calls": [
+    { "name": "hangup_call", "parameters": { "farewell_message": "Goodbye" } }
+  ],
+  "finish_reason": "tool_calls",
+  "tool_path": "parser",
+  "tool_parse_failures": 0,
+  "repair_attempts": 0,
+  "structured_attempts": 0,
+  "protocol_version": 2
+}
+```
+
+Notes:
+
+- `tool_path` values: `parser`, `structured`, `repair`, `heuristic`, `none`.
+- When `LOCAL_TOOL_GATEWAY_ENABLED=1`, structured/repair paths are used when parsing fails.
+- Fast-path hangup heuristic can emit `hangup_call` if end-of-call intent is detected in `latest_user_text`.
 
 ---
 
@@ -248,6 +339,10 @@ Response:
 { "type": "reload_llm" }
 ```
 
+Optional request fields:
+
+- `llm_model_path` (or alias `model_path`) to update the active model path before reload.
+
 Response:
 
 ```json
@@ -274,18 +369,58 @@ Response:
   "tts_backend": "piper|kokoro|melotts",
   "models": {
     "stt": { "loaded": true, "path": "/app/models/stt/...", "display": "vosk-model-en-us-0.22" },
-    "llm": { "loaded": true, "path": "/app/models/llm/...", "display": "phi-3-mini-4k-instruct.Q4_K_M.gguf" },
+    "llm": {
+      "loaded": true,
+      "path": "/app/models/llm/...",
+      "display": "phi-3-mini-4k-instruct.Q4_K_M.gguf",
+      "config": {
+        "context": 2048,
+        "threads": 16,
+        "batch": 128,
+        "max_tokens": 64,
+        "temperature": 0.4,
+        "top_p": 0.85,
+        "repeat_penalty": 1.05,
+        "gpu_layers": 50
+      },
+      "prompt_fit": {
+        "system_prompt_chars": 123,
+        "system_prompt_tokens": 68,
+        "safe_max_tokens": 1972
+      },
+      "auto_context": { "requested_ctx": 2048, "effective_ctx": 2048 },
+      "tool_capability": { "level": "partial", "chat_format": "chatml" }
+    },
     "tts": { "loaded": true, "path": "/app/models/tts/...", "display": "en_US-lessac-medium.onnx" }
   },
   "kroko": { "embedded": false, "port": 6006, "language": "en-US", "url": "wss://...", "model_path": "/app/models/kroko/..." },
   "kokoro": { "mode": "local|api|hf", "voice": "af_heart", "model_path": "/app/models/tts/kokoro", "api_base_url": "https://.../api/v1", "api_key_set": false },
-  "config": { "log_level": "INFO", "debug_audio": false }
+  "gpu": {
+    "runtime_detected": true,
+    "runtime_usable": true,
+    "source": "nvidia_smi",
+    "name": "NVIDIA GeForce RTX 4090",
+    "memory_gb": 24.0,
+    "error": null
+  },
+  "config": {
+    "log_level": "INFO",
+    "debug_audio": false,
+    "mock_models": false,
+    "runtime_mode": "full|minimal",
+    "tool_gateway_enabled": true,
+    "degraded": false,
+    "startup_errors": {},
+    "runtime_fallbacks": {}
+  }
 }
 ```
 
 Schema:
 
-- See `docs/local-ai-server/protocol.schema.json` for a machine-checkable JSON Schema of the protocol contract.
+- Base contract: `docs/local-ai-server/protocol.schema.json`
+- Canonical generator/source: `local_ai_server/protocol_contract.py`
+- Note: operational/advanced messages (`barge_in`, backend registry introspection) are documented here and may not always be represented in the published schema file.
 
 ---
 
@@ -319,6 +454,31 @@ Request (examples):
 { "type": "switch_model", "llm_model_path": "/app/models/llm/phi-3-mini-4k-instruct.Q4_K_M.gguf" }
 ```
 
+```json
+{
+  "type": "switch_model",
+  "llm_config": {
+    "context": 2048,
+    "max_tokens": 128,
+    "chat_format": "llama-3",
+    "gpu_layers": -1,
+    "system_prompt": "You are a helpful voice assistant."
+  }
+}
+```
+
+```json
+{
+  "type": "switch_model",
+  "stt_backend": "faster_whisper",
+  "stt_config": {
+    "model": "medium",
+    "device": "cuda",
+    "compute_type": "float16"
+  }
+}
+```
+
 Response:
 
 ```json
@@ -328,6 +488,19 @@ Response:
 Optional fields:
 
 - `dry_run` (boolean): when `true`, the server updates its in-memory configuration and responds with `switch_response`, but does **not** reload models. This is intended for diagnostics/smoke tests.
+
+Accepted payload shapes:
+
+- Top-level keys (for compatibility): `stt_backend`, `tts_backend`, `llm_model_path`, `kokoro_*`, `kroko_*`, `sherpa_model_path`, `stt_model_path`, `tts_model_path`.
+- Nested config objects:
+  - `stt_config`: `model`, `device`, `compute_type`, plus Kroko aliases (`url`, `language`, `port`, `embedded`, `model_path`)
+  - `tts_config`: `voice`, `mode`, `lang`, `api_base_url`, `api_key`, `api_model`, `device`, `speed`, `model_path`
+  - `llm_config`: `model_path`, `threads`, `context`, `batch`, `max_tokens`, `temperature`, `top_p`, `repeat_penalty`, `gpu_layers`, `system_prompt`, `use_mlock`, `chat_format`
+
+Notes:
+
+- `chat_format` is hot-reloadable through `llm_config.chat_format`.
+- Unsupported keys are ignored; valid applied keys are returned in `changed`.
 
 ---
 
@@ -366,6 +539,47 @@ Notes:
 - `kokoro`: `true` if Kokoro package is installed, or `KOKORO_API_BASE_URL` is set, or model files exist on disk
 - `vosk`, `piper`, `llama`: Reported as `true` in default/full Docker images (assumes standard dependencies are installed)
 - Used by Admin UI `/api/local-ai/capabilities` endpoint to filter available options
+
+---
+
+## Backend Registry Introspection (advanced)
+
+These messages are used by backend/plugin tooling and advanced UI flows.
+
+- List registered backends:
+
+```json
+{ "type": "backends" }
+```
+
+Response:
+
+```json
+{
+  "type": "backends_response",
+  "stt": [{ "name": "vosk", "available": true }],
+  "tts": [{ "name": "piper", "available": true }],
+  "llm": [{ "name": "llama_cpp", "available": true }]
+}
+```
+
+- Get backend config schema:
+
+```json
+{ "type": "backend_schema", "backend_type": "stt", "backend_name": "vosk" }
+```
+
+Response:
+
+```json
+{
+  "type": "backend_schema_response",
+  "backend_type": "stt",
+  "backend_name": "vosk",
+  "schema": {},
+  "available": true
+}
+```
 
 ---
 
@@ -444,15 +658,45 @@ async def stt(pcm_bytes):
 
 ## Environment Variables and Tuning
 
-Server-side (see `local_ai_server/ws_protocol.py`):
+Server-side (see `local_ai_server/config.py`, `local_ai_server/server.py`):
 
 - Models: `LOCAL_STT_MODEL_PATH`, `LOCAL_LLM_MODEL_PATH`, `LOCAL_TTS_MODEL_PATH`
 - WebSocket bind: `LOCAL_WS_HOST`, `LOCAL_WS_PORT`
 - Optional auth: `LOCAL_WS_AUTH_TOKEN`
-- LLM performance: `LOCAL_LLM_THREADS`, `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_BATCH`, `LOCAL_LLM_MAX_TOKENS`, `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`, `LOCAL_LLM_REPEAT_PENALTY`, `LOCAL_LLM_SYSTEM_PROMPT`, `LOCAL_LLM_STOP_TOKENS`
-- STT idle promote: `LOCAL_STT_IDLE_MS` (default 3000 ms)
-- LLM timeout: `LOCAL_LLM_INFER_TIMEOUT_SEC` (default 20.0)
-- Logging: `LOCAL_LOG_LEVEL` (default INFO)
+- Runtime mode:
+  - `LOCAL_AI_MODE` = `full|minimal`
+  - If unset: defaults to `full` when `GPU_AVAILABLE=true`, otherwise `minimal`
+- LLM performance:
+  - `LOCAL_LLM_THREADS`, `LOCAL_LLM_CONTEXT`, `LOCAL_LLM_BATCH`, `LOCAL_LLM_MAX_TOKENS`
+  - `LOCAL_LLM_TEMPERATURE`, `LOCAL_LLM_TOP_P`, `LOCAL_LLM_REPEAT_PENALTY`
+  - `LOCAL_LLM_GPU_LAYERS` (`0` CPU, `-1` auto, `N` explicit)
+  - `LOCAL_LLM_GPU_LAYERS_AUTO_DEFAULT` (auto-mode fallback target)
+  - `LOCAL_LLM_USE_MLOCK`
+  - `LOCAL_LLM_CHAT_FORMAT`
+  - `LOCAL_LLM_SYSTEM_PROMPT`, `LOCAL_LLM_VOICE_PREAMBLE`, `LOCAL_LLM_STOP_TOKENS`
+  - `LOCAL_LLM_INFER_TIMEOUT_SEC` (default `20.0`)
+- Tool gateway:
+  - `LOCAL_TOOL_GATEWAY_ENABLED` (default `1`)
+- STT:
+  - Backend select: `LOCAL_STT_BACKEND`
+  - Whisper.cpp: `WHISPER_CPP_MODEL_PATH` (legacy alias: `LOCAL_WHISPER_CPP_MODEL_PATH`), `WHISPER_CPP_LANGUAGE`
+  - Faster-Whisper: `FASTER_WHISPER_MODEL`, `FASTER_WHISPER_DEVICE`, `FASTER_WHISPER_COMPUTE_TYPE`, `FASTER_WHISPER_LANGUAGE`
+  - Kroko: `KROKO_EMBEDDED`, `KROKO_MODEL_PATH`, `KROKO_PORT`, `KROKO_URL`, `KROKO_API_KEY`, `KROKO_LANGUAGE`
+  - Idle promote: `LOCAL_STT_IDLE_MS` (legacy alias: `LOCAL_STT_IDLE_TIMEOUT_MS`, default `5000`)
+  - Whisper utterance segmentation (used for `faster_whisper` and `whisper_cpp`):
+    - `LOCAL_STT_SEGMENT_ENERGY_THRESHOLD` (default `1200`)
+    - `LOCAL_STT_SEGMENT_PREROLL_MS` (default `200`)
+    - `LOCAL_STT_SEGMENT_MIN_MS` (default `250`)
+    - `LOCAL_STT_SEGMENT_SILENCE_MS` (default `500`)
+    - `LOCAL_STT_SEGMENT_MAX_MS` (default `12000`)
+- TTS:
+  - Backend select: `LOCAL_TTS_BACKEND`
+  - Kokoro: `KOKORO_MODE`, `KOKORO_VOICE`, `KOKORO_LANG`, `KOKORO_MODEL_PATH`, `KOKORO_API_BASE_URL`, `KOKORO_API_KEY`, `KOKORO_API_MODEL`
+  - MeloTTS: `MELOTTS_VOICE`, `MELOTTS_DEVICE`, `MELOTTS_SPEED`
+- Resilience/testing:
+  - `LOCAL_AI_MOCK_MODELS=1` (skip real model loading)
+  - `LOCAL_AI_FAIL_FAST=1` (abort startup on model load failures instead of degraded mode)
+- Logging: `LOCAL_LOG_LEVEL` (default `INFO`)
 
 Engine-side (see `config/ai-agent.*.yaml` and `.env.example`):
 
@@ -479,54 +723,30 @@ For a single request_id and continuous audio segment in `full` mode:
 
 Duplicate/empty finals are suppressed; see `_handle_final_transcript()` for details.
 
+For Whisper-family STT backends (`faster_whisper`, `whisper_cpp`), STT is temporarily suppressed while server-generated TTS audio is playing; send `barge_in` to clear suppression immediately when caller interruption is detected.
+
 ---
 
 ## Error Responses
 
-When the server encounters an error processing a request, it responds with an error message:
+Current implementation does **not** emit a generic `{"type":"error"}` envelope for all failures.
 
-```json
-{
-  "type": "error",
-  "error": "Error description",
-  "call_id": "1234-5678",
-  "request_id": "r1",
-  "details": {
-    "error_type": "timeout" | "invalid_request" | "processing_error",
-    "component": "stt" | "llm" | "tts",
-    "message": "Detailed error message"
-  }
-}
-```
+Error behavior is component/message specific:
 
-Common error types:
-
-- **timeout**: Component took too long (e.g., LLM inference timeout)
-- **invalid_request**: Malformed JSON or missing required fields
-- **processing_error**: Internal error during STT/LLM/TTS processing
-
-Example:
-
-```json
-{
-  "type": "error",
-  "error": "LLM inference timeout after 20.0 seconds",
-  "call_id": "abc-123",
-  "request_id": "llm-1",
-  "details": {
-    "error_type": "timeout",
-    "component": "llm",
-    "message": "Increase LOCAL_LLM_INFER_TIMEOUT_SEC or reduce max_tokens"
-  }
-}
-```
+- Auth failures: `auth_response` with `status=error`.
+- Switch failures: `switch_response` with `status=error`.
+- STT unavailable during audio processing: final `stt_result` with `text=""` and `error="stt_unavailable"`.
+- LLM timeout/error during `llm`/`full`: fallback text in `llm_response` (connection stays alive).
+- Invalid JSON / unknown message types: logged and ignored (no response frame).
 
 ---
 
 ## Common Issues and Resolutions
 
 - STT returns empty often
-  - Cause: utterances too short. Increase chunk size or allow idle finalizer (`LOCAL_STT_IDLE_MS`), ensure PCM16 @ 16kHz input.
+  - Cause: utterances too short or speech energy below threshold. For Whisper-family STT, lower `LOCAL_STT_SEGMENT_ENERGY_THRESHOLD` (for example `1200` → `800`) and verify `LOCAL_STT_SEGMENT_SILENCE_MS`.
+- Transcript contains only punctuation (`?`, `.`)
+  - Current behavior: punctuation-only finals are treated as non-linguistic and suppressed in `llm`/`full` mode to avoid feedback loops.
 - No TTS audio received
   - For `tts_request`, the response is JSON `tts_response` containing `audio_data` (base64 μ-law @ 8 kHz).
   - For `full` mode, the server sends a binary WebSocket frame containing μ-law bytes (and may also send `tts_audio` metadata if `request_id` was provided).
@@ -545,42 +765,35 @@ Example:
 
 ## Performance Characteristics
 
-### Models (Default Installation)
+Latency depends heavily on backend/model choices and whether GPU is used.
 
-- **STT**: Vosk `vosk-model-en-us-0.22` (16kHz native)
-  - Size: ~40MB
-  - Latency: 100-300ms (streaming with partials)
-  - Accuracy: Good for conversational speech
+### Observed on modern GPU hosts (project community tests)
 
-- **LLM**: Phi-3-mini-4k `phi-3-mini-4k-instruct.Q4_K_M.gguf`
-  - Size: 2.3GB
-  - Warmup: ~110 seconds (first load)
-  - Inference: 2-5 seconds per response
-  - Context: 4096 tokens
-  - Quality: Good for conversational AI (better than TinyLlama, less than GPT-4)
+- Host profile: RTX 4090 (24GB), high-core CPU, Docker GPU stack.
+- Example stack: `whisper_cpp` + `Llama-3.1-8B Q4_K_M` + `Kokoro local`.
+- Observed (2026-02-27 test matrix):
+  - End-to-end turn latency: ~449 ms
+  - LLM latency: ~128 ms average (11 samples, last=49 ms)
 
-- **TTS**: Piper `en_US-lessac-medium.onnx` (22kHz native)
-  - Size: ~60MB
-  - Latency: 500-1000ms
-  - Output: μ-law @ 8kHz
-  - Quality: Natural, clear voice
+### Practical tuning notes
 
-### Typical Latencies (End-to-End)
-
-- **STT only**: 100-300ms
-- **LLM inference**: 2-5 seconds (depends on response length)
-- **TTS synthesis**: 500-1000ms
-- **Full pipeline turn**: 3-7 seconds total
+- Whisper-family STT (`faster_whisper`, `whisper_cpp`) now uses utterance segmentation to improve coherence; tune segmentation thresholds before changing models.
+- `LOCAL_LLM_GPU_LAYERS=-1` with `LOCAL_LLM_GPU_LAYERS_AUTO_DEFAULT` gives stable offload defaults by VRAM class.
+- Keep `LOCAL_LLM_CONTEXT` moderate (for example 2048) for telephony; larger contexts increase latency and memory pressure.
+- Prefer `kokoro` local or `piper` for predictable low-latency local deployment.
 
 ### Concurrency
 
-- **Single server**: ~10-20 concurrent calls (CPU-bound)
-- **Bottleneck**: LLM inference (most CPU intensive)
-- **Scaling**: Deploy multiple containers with load balancer
+- Bottleneck is usually LLM inference throughput and TTS generation under overlap.
+- For predictable production, scale by running multiple local-ai-server instances and sharding calls at the engine/orchestrator layer.
 
 ---
 
 ## Versioning and Compatibility
 
-- Protocol is stable for v6.3.1 GA track. Message types and fields correspond to the implementation in `local_ai_server/ws_protocol.py`.
-- The engine's local provider uses the same contract to support pipelines defined in `config/ai-agent.*.yaml`.
+- Message types and fields in this document map to current implementation in `local_ai_server/ws_protocol.py` + `local_ai_server/server.py`.
+- `type` normalization (`-` and `_` interchange) is backward compatible for existing clients.
+- Backward-compatible env aliases are supported in config loading:
+  - `LOCAL_WHISPER_CPP_MODEL_PATH` → `WHISPER_CPP_MODEL_PATH`
+  - `LOCAL_STT_IDLE_TIMEOUT_MS` → `LOCAL_STT_IDLE_MS`
+- The engine's local provider uses the same WS contract for local pipeline transports defined in `config/ai-agent.*.yaml`.

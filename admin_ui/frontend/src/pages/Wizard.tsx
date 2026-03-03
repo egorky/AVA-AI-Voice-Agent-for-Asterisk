@@ -194,6 +194,7 @@ exten => s,1,NoOp(AI Agent Call)
         serverStarted: boolean;
         serverLogs: string[];
         serverReady: boolean;
+        serverPhase: 'idle' | 'building' | 'starting' | 'running';
         systemDetected: boolean;
     }>({
         tier: '',
@@ -210,7 +211,8 @@ exten => s,1,NoOp(AI Agent Call)
         downloadCompleted: false,
         serverStarted: false,
         serverLogs: [] as string[],
-        serverReady: false
+        serverReady: false,
+        serverPhase: 'idle'
     });
 
     const [modelsStatus, setModelsStatus] = useState<LocalModelsStatus | null>(null);
@@ -594,7 +596,8 @@ exten => s,1,NoOp(AI Agent Call)
                     setLocalAIStatus((prev) => ({
                         ...prev,
                         serverLogs: logRes.data.logs || [],
-                        serverReady: logRes.data.ready
+                        serverReady: logRes.data.ready,
+                        serverPhase: logRes.data.phase || (logRes.data.ready ? 'running' : 'starting')
                     }));
                 }
                 if (!logRes.data.ready) {
@@ -2466,13 +2469,30 @@ exten => s,1,NoOp(AI Agent Call)
 
                 {step === 5 && (
                     <div className="space-y-6 text-center">
-                        <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
-                            <CheckCircle className="w-8 h-8" />
-                        </div>
-                        <h2 className="text-2xl font-bold">Setup Complete!</h2>
-                        <p className="text-muted-foreground">
-                            Your AI Agent is configured and ready.
-                        </p>
+                        {/* Show different header based on local server readiness */}
+                        {config.provider === 'local' && !localAIStatus.serverReady ? (
+                            <>
+                                <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <Loader2 className="w-8 h-8 animate-spin" />
+                                </div>
+                                <h2 className="text-2xl font-bold">Setting Up Local AI Server...</h2>
+                                <p className="text-muted-foreground">
+                                    {localAIStatus.serverPhase === 'building' 
+                                        ? 'Building GPU-accelerated Docker image. This may take 10-30 minutes on first run.'
+                                        : 'Starting server and loading AI models...'}
+                                </p>
+                            </>
+                        ) : (
+                            <>
+                                <div className="w-16 h-16 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <CheckCircle className="w-8 h-8" />
+                                </div>
+                                <h2 className="text-2xl font-bold">Setup Complete!</h2>
+                                <p className="text-muted-foreground">
+                                    Your AI Agent is configured and ready.
+                                </p>
+                            </>
+                        )}
 
                         {/* Local AI Server Setup - Only for Local provider */}
                         {config.provider === 'local' && (
@@ -2534,7 +2554,9 @@ exten => s,1,NoOp(AI Agent Call)
                                                 ) : (
                                                     <span className="text-blue-600 dark:text-blue-400 flex items-center">
                                                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600 mr-2"></div>
-                                                        Starting up... (loading models)
+                                                        {localAIStatus.serverPhase === 'building' 
+                                                            ? 'Building Docker image (this may take 10-30 minutes)...'
+                                                            : 'Starting up... (loading models)'}
                                                     </span>
                                                 )}
                                             </div>

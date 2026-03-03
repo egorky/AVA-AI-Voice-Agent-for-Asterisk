@@ -9,8 +9,18 @@ import { ConfigCard } from '../../components/ui/ConfigCard';
 import { FormInput } from '../../components/ui/FormComponents';
 import { sanitizeConfigForSave } from '../../utils/configSanitizers';
 
+const CHAT_FORMAT_OPTIONS = [
+    { value: '', label: '(Legacy Phi-style — no chat template)' },
+    { value: 'chatml', label: 'ChatML (Phi-3, Qwen, Hermes, TinyLlama, Command-R)' },
+    { value: 'llama-3', label: 'Llama 3 (Llama 3.x family)' },
+    { value: 'mistral-instruct', label: 'Mistral Instruct (Mistral, Nemo)' },
+    { value: 'gemma', label: 'Gemma (Google Gemma 2)' },
+    { value: 'functionary-v2', label: 'Functionary v2 (tool-calling tuned)' },
+];
+
 const LLMPage = () => {
     const [config, setConfig] = useState<any>({});
+    const [env, setEnv] = useState<Record<string, string>>({});
     const [loading, setLoading] = useState(true);
     const [yamlError, setYamlError] = useState<YamlErrorInfo | null>(null);
     const [saving, setSaving] = useState(false);
@@ -25,9 +35,10 @@ const LLMPage = () => {
 
     const fetchConfig = async () => {
         try {
-            const [yamlRes, healthRes] = await Promise.allSettled([
+            const [yamlRes, healthRes, envRes] = await Promise.allSettled([
                 axios.get('/api/config/yaml'),
-                axios.get('/api/system/health')
+                axios.get('/api/system/health'),
+                axios.get('/api/config/env'),
             ]);
 
             if (yamlRes.status !== 'fulfilled') {
@@ -42,6 +53,10 @@ const LLMPage = () => {
                 const parsed = yaml.load(res.data.content) as any;
                 setConfig(parsed || {});
                 setYamlError(null);
+            }
+
+            if (envRes.status === 'fulfilled') {
+                setEnv(envRes.value.data || {});
             }
 
             if (healthRes.status === 'fulfilled') {
@@ -62,16 +77,36 @@ const LLMPage = () => {
         }
     };
 
+    const updateEnv = (key: string, value: string) => {
+        setEnv(prev => ({ ...prev, [key]: value }));
+    };
+
     const handleSave = async () => {
         setSaving(true);
         try {
             const sanitized = sanitizeConfigForSave(config);
-            await axios.post('/api/config/yaml', { content: yaml.dump(sanitized) });
-            setPendingRestart(true);
+            const [yamlSave, envSave] = await Promise.allSettled([
+                axios.post('/api/config/yaml', { content: yaml.dump(sanitized) }),
+                axios.post('/api/config/env', env),
+            ]);
+
+            const yamlOk = yamlSave.status === 'fulfilled';
+            const envOk = envSave.status === 'fulfilled';
+            if (yamlOk || envOk) {
+                setPendingRestart(true);
+            }
+            if (!yamlOk || !envOk) {
+                const yamlState = yamlOk ? 'ok' : 'failed';
+                const envState = envOk ? 'ok' : 'failed';
+                throw new Error(`Partial save detected (yaml=${yamlState}, env=${envState})`);
+            }
+
             toast.success('LLM configuration saved');
-        } catch (err) {
+        } catch (err: any) {
             console.error('Failed to save config', err);
-            toast.error('Failed to save configuration');
+            toast.error('Failed to save configuration', {
+                description: err?.message || 'Unknown error',
+            });
         } finally {
             setSaving(false);
         }
@@ -223,6 +258,42 @@ const LLMPage = () => {
                             />
                             <p className="text-xs text-muted-foreground">
                                 The core personality and instructions for the AI.
+                            </p>
+                        </div>
+                    </div>
+                </ConfigCard>
+            </ConfigSection>
+
+            <ConfigSection title="Local LLM Prompting" description="Chat template and voice preamble for the local LLM (llama-cpp). Requires local_ai_server restart.">
+                <ConfigCard>
+                    <div className="space-y-6">
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium leading-none">Chat Format</label>
+                            <select
+                                className="w-full p-2 rounded border border-input bg-background text-sm"
+                                value={env['LOCAL_LLM_CHAT_FORMAT'] || ''}
+                                onChange={(e) => updateEnv('LOCAL_LLM_CHAT_FORMAT', e.target.value)}
+                            >
+                                {CHAT_FORMAT_OPTIONS.map(opt => (
+                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                            </select>
+                            <p className="text-xs text-muted-foreground">
+                                Determines the prompt template used by <code>create_chat_completion()</code>.
+                                Auto-set when selecting a model on the Models page. Leave empty for legacy Phi-style raw prompting.
+                            </p>
+                        </div>
+                        <div className="space-y-2">
+                            <label className="text-sm font-medium leading-none">Voice Preamble</label>
+                            <textarea
+                                className="flex min-h-[100px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                value={env['LOCAL_LLM_VOICE_PREAMBLE'] || ''}
+                                onChange={(e) => updateEnv('LOCAL_LLM_VOICE_PREAMBLE', e.target.value)}
+                                placeholder="You are a voice assistant on a phone call. Keep responses short and conversational. Do not use markdown, bullet points, numbered lists, or any visual formatting. Speak naturally as if talking to someone on the phone."
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                Meta-instructions prepended to the system prompt so local LLMs produce voice-friendly output
+                                (no markdown, concise, natural speech). Applied to every call.
                             </p>
                         </div>
                     </div>

@@ -5,8 +5,10 @@ Handles Docker container rebuilds with progress tracking, error capture, and rol
 Similar pattern to download jobs in wizard.py.
 """
 
+import copy
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import threading
@@ -97,7 +99,10 @@ def _env_enabled_defaults() -> Dict[str, bool]:
     env_path = os.path.join(PROJECT_ROOT, ".env")
     env = _read_env_file(env_path)
     gpu_available = _is_truthy(env.get("GPU_AVAILABLE"))
-    return _DEFAULT_INCLUDE_GPU if gpu_available else _DEFAULT_INCLUDE_BASE
+    if not gpu_available:
+        return _DEFAULT_INCLUDE_BASE
+    gpu_compose_path = os.path.join(PROJECT_ROOT, "docker-compose.gpu.yml")
+    return _DEFAULT_INCLUDE_GPU if os.path.exists(gpu_compose_path) else _DEFAULT_INCLUDE_BASE
 
 
 def _backup_env_file() -> Optional[str]:
@@ -247,11 +252,12 @@ def _create_rebuild_job_locked(backend: str) -> RebuildJob:
 def get_rebuild_job(job_id: Optional[str] = None) -> Optional[RebuildJob]:
     """Return the requested job, or the most recent job if job_id is None."""
     with _rebuild_jobs_lock:
+        job: Optional[RebuildJob] = None
         if job_id:
-            return _rebuild_jobs.get(job_id)
-        if _latest_rebuild_job_id:
-            return _rebuild_jobs.get(_latest_rebuild_job_id)
-        return None
+            job = _rebuild_jobs.get(job_id)
+        elif _latest_rebuild_job_id:
+            job = _rebuild_jobs.get(_latest_rebuild_job_id)
+        return copy.deepcopy(job) if job else None
 
 
 def _job_output(job_id: str, line: str) -> None:
@@ -318,12 +324,13 @@ def _run_docker_build(job_id: str, service: str = "local_ai_server") -> bool:
         env_path = os.path.join(PROJECT_ROOT, ".env")
         env = _read_env_file(env_path)
         build_args = _build_args_for_backend(backend, env)
-        build_args_str = " ".join(build_args)
+        build_args_str = " ".join(shlex.quote(arg) for arg in build_args)
+        service_arg = shlex.quote(service)
 
         cmd = (
             "set -euo pipefail; "
             "cd \"$PROJECT_ROOT\"; "
-            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent build --no-cache {build_args_str} {service}"
+            f"docker compose {compose_prefix}-p asterisk-ai-voice-agent build --no-cache {build_args_str} {service_arg}"
         )
         _job_output(job_id, f"$ {cmd}")
 
@@ -382,17 +389,23 @@ def _run_docker_up(job_id: str, service: str = "local_ai_server") -> bool:
 
 def _verify_backend_loaded(job_id: str, backend: str, timeout: int = 60) -> bool:
     """Wait for container to be healthy and verify backend is available."""
-    _job_output(job_id, f"Waiting for local_ai_server to be healthy...")
+    _job_output(job_id, "Waiting for local_ai_server to be healthy...")
     
     start = time.time()
     while time.time() - start < timeout:
         try:
             # Check container health
+            docker_bin = shutil.which("docker") or "docker"
             result = subprocess.run(
-                ["docker", "inspect", "--format", "{{.State.Health.Status}}", "local_ai_server"],
+                [docker_bin, "inspect", "--format", "{{.State.Health.Status}}", "local_ai_server"],
                 capture_output=True,
                 text=True,
+                timeout=5,
             )
+            if result.returncode != 0:
+                _job_output(job_id, f"Health probe inspect failed: {(result.stderr or '').strip()}")
+                time.sleep(3)
+                continue
             status = result.stdout.strip()
             
             if status == "healthy":
@@ -437,11 +450,14 @@ def _verify_backend_loaded(job_id: str, backend: str, timeout: int = 60) -> bool
                     _job_output(job_id, f"Capabilities probe failed: {e}")
             
             time.sleep(3)
+        except subprocess.TimeoutExpired:
+            _job_output(job_id, "Health probe timed out; retrying...")
+            time.sleep(3)
         except Exception as e:
             _job_output(job_id, f"Health check error: {e}")
             time.sleep(3)
     
-    _job_output(job_id, f"⚠️ Timeout waiting for backend verification")
+    _job_output(job_id, "⚠️ Timeout waiting for backend verification")
     return False
 
 
@@ -466,8 +482,13 @@ def start_rebuild_job(backend: str) -> Dict[str, Any]:
         job = _create_rebuild_job_locked(backend)
     
     # Start rebuild in background thread (outside lock)
-    thread = threading.Thread(target=_rebuild_worker, args=(job.id, backend), daemon=True)
-    thread.start()
+    try:
+        thread = threading.Thread(target=_rebuild_worker, args=(job.id, backend), daemon=True)
+        thread.start()
+    except Exception as e:
+        _job_output(job.id, f"❌ ERROR: failed to start rebuild worker: {e}")
+        _job_finish(job.id, completed=False, error=f"Failed to start rebuild worker: {e}")
+        return {"error": "Failed to start rebuild worker"}
     
     return {
         "job_id": job.id,
@@ -480,12 +501,16 @@ def start_rebuild_job(backend: str) -> Dict[str, Any]:
 def _rebuild_worker(job_id: str, backend: str) -> None:
     """Background worker that performs the rebuild."""
     backup_path = None
+    env_path = os.path.join(PROJECT_ROOT, ".env")
+    env_preexisting = os.path.exists(env_path)
     
     try:
         # Phase 1: Backup
         _job_set_progress(job_id, phase="backup", percent=5, message="Creating backup...")
         _job_output(job_id, "Creating backup of .env...")
         backup_path = _backup_env_file()
+        if env_preexisting and not backup_path:
+            raise RuntimeError("Failed to back up existing .env; aborting rebuild")
         if backup_path:
             _job_output(job_id, f"Backup created: {backup_path}")
         
@@ -524,7 +549,10 @@ def _rebuild_worker(job_id: str, backend: str) -> None:
         
         # Cleanup backup
         if backup_path and os.path.exists(backup_path):
-            os.remove(backup_path)
+            try:
+                os.remove(backup_path)
+            except OSError as e:
+                _job_output(job_id, f"⚠️ Backup cleanup failed: {e}")
         
         _job_finish(job_id, completed=True)
         
@@ -539,8 +567,19 @@ def _rebuild_worker(job_id: str, backend: str) -> None:
             _job_output(job_id, "Rolling back configuration...")
             if _restore_env_backup(backup_path):
                 _job_output(job_id, "Configuration restored from backup")
-                rolled_back = True
+                _job_output(job_id, "Re-applying restored configuration...")
+                if _run_docker_up(job_id):
+                    rolled_back = True
+                else:
+                    _job_output(job_id, "⚠️ Rollback config restored, but service recreate failed")
             else:
                 _job_output(job_id, "⚠️ Failed to restore backup - manual intervention may be needed")
+        elif not env_preexisting:
+            try:
+                if os.path.exists(env_path):
+                    os.remove(env_path)
+                    _job_output(job_id, "Removed auto-created .env after failed rebuild")
+            except OSError as cleanup_err:
+                _job_output(job_id, f"⚠️ Failed to remove auto-created .env: {cleanup_err}")
         
         _job_finish(job_id, completed=False, error=error_msg, rolled_back=rolled_back)

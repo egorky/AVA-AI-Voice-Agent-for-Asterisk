@@ -18,12 +18,12 @@ class WebSocketProtocol:
         try:
             data = json.loads(message)
         except json.JSONDecodeError:
-            logging.warning("❓ Invalid JSON message: %s", message)
+            logging.warning("❓ Invalid JSON message received (length=%d)", len(message))
             return
 
         msg_type_raw = data.get("type")
         if msg_type_raw is None:
-            logging.warning("JSON payload missing 'type': %s", data)
+            logging.warning("JSON payload missing 'type' (keys=%s)", sorted(data.keys()))
             return
         msg_type = (
             str(msg_type_raw)
@@ -33,7 +33,12 @@ class WebSocketProtocol:
             .replace("-", "_")
         )
         if not msg_type:
-            logging.warning("JSON payload has invalid 'type': raw=%r payload=%s", msg_type_raw, data)
+            logging.warning(
+                "JSON payload has invalid 'type' (raw=%r, raw_type=%s, payload_keys=%s)",
+                msg_type_raw,
+                type(msg_type_raw).__name__,
+                sorted(data.keys()),
+            )
             return
 
         if msg_type == "auth":

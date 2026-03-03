@@ -24,9 +24,12 @@ interface ModelInfo {
     gender?: string;
     auto_download?: boolean;  // Models that auto-download from HuggingFace on first use
     note?: string;  // Info note about the model
+    recommended?: boolean;
+    system_recommended?: boolean;
     recommended_ram_gb?: number;
     tool_calling?: 'recommended' | 'experimental' | 'none' | string;
     tool_calling_note?: string;
+    chat_format?: string;
 }
 
 interface InstalledModel {
@@ -531,15 +534,25 @@ const ModelsPage = () => {
         return Array.from(regions);
     };
 
+    const normalizeModelKey = (value: string) => {
+        const raw = (value || '').trim();
+        if (!raw) return '';
+        const parts = raw.split('/').filter(Boolean);
+        return (parts[parts.length - 1] || raw).trim();
+    };
+
     const isModelInstalled = (modelPath: string) => {
-        return installedModels.some(m => m.path.includes(modelPath) || m.name === modelPath);
+        const key = normalizeModelKey(modelPath);
+        if (!key) return false;
+        return installedModels.some(m => normalizeModelKey(m.path) === key);
     };
 
     // Get friendly display name for installed model by matching against catalog
     const getModelDisplayName = (model: InstalledModel): string => {
         const allCatalogModels = [...catalog.stt, ...catalog.tts, ...catalog.llm];
+        const installedKey = normalizeModelKey(model.path);
         const catalogMatch = allCatalogModels.find(cm =>
-            cm.model_path && (model.path.includes(cm.model_path) || model.name === cm.model_path)
+            cm.model_path && normalizeModelKey(cm.model_path) === installedKey
         );
         return catalogMatch?.name || model.name;
     };
@@ -562,6 +575,17 @@ const ModelsPage = () => {
     const runtimeGpuKnown = runtimeGpu !== null && typeof runtimeGpu.runtime_detected === 'boolean';
     const runtimeGpuDetected = runtimeGpu?.runtime_detected === true;
     const runtimeGpuUsable = runtimeGpu?.runtime_usable === true;
+
+    const isBackendAvailable = (backend: string | undefined) => {
+        const b = (backend || '').trim().toLowerCase();
+        if (!b) return true;
+        if (b === 'faster_whisper') return !!capabilities?.stt?.faster_whisper?.available;
+        if (b === 'whisper_cpp') return !!capabilities?.stt?.whisper_cpp?.available;
+        if (b === 'kroko') return true; // cloud always available; embedded availability is checked separately at apply time
+        if (b === 'vosk') return true;
+        if (b === 'sherpa') return true;
+        return true;
+    };
 
     const getCompatibilityIssues = (changes: { stt?: string; tts?: string; llm?: string }): CompatibilityIssue[] => {
         const issues: CompatibilityIssue[] = [];
@@ -717,6 +741,23 @@ const ModelsPage = () => {
             // Apply LLM changes (model and/or tuning) in one request to avoid multiple reloads.
             if (remainingChanges.llm || hasLlmTuningChanges) {
                 updateApplyProgress('switching', 82, 'Applying LLM changes...', 'Sending LLM switch request');
+
+                // Auto-set chat_format from catalog when switching LLM model
+                if (remainingChanges.llm && availableModels?.llm) {
+                    const matchedModel = (availableModels.llm as any[]).find(
+                        (m: any) => m.model_path === remainingChanges.llm || m.path === remainingChanges.llm || m.id === remainingChanges.llm
+                    );
+                    const catalogChatFormat = matchedModel?.chat_format || '';
+                    try {
+                        const currentEnv = (await axios.get('/api/config/env')).data || {};
+                        currentEnv['LOCAL_LLM_CHAT_FORMAT'] = catalogChatFormat;
+                        await axios.post('/api/config/env', currentEnv);
+                        updateApplyProgress('switching', 84, 'Applying LLM changes...', `Chat format auto-set to: ${catalogChatFormat || '(legacy)'}`);
+                    } catch (envErr) {
+                        console.warn('Failed to auto-set LOCAL_LLM_CHAT_FORMAT', envErr);
+                    }
+                }
+
                 await axios.post('/api/local-ai/switch', {
                     model_type: 'llm',
                     model_path: remainingChanges.llm || undefined,
@@ -1358,15 +1399,34 @@ const ModelsPage = () => {
                                                         <div>
                                                             <div className="flex items-center gap-2">
                                                                 <p className="font-medium">{model.name}</p>
-                                                                {isModelInstalled(model.model_path || '') && (
+                                                                {!model.auto_download && isModelInstalled(model.model_path || '') && (
                                                                     <span className="px-2 py-0.5 text-xs bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full">
                                                                         Installed
+                                                                    </span>
+                                                                )}
+                                                                {model.system_recommended && (
+                                                                    <span className="px-2 py-0.5 text-xs bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 rounded-full">
+                                                                        Recommended
                                                                     </span>
                                                                 )}
                                                             </div>
                                                             <p className="text-sm text-muted-foreground">
                                                                 {languageNames[model.language || ''] || model.language} • {model.size_display} • {model.backend}
                                                             </p>
+                                                            {(model.description || model.note) && (
+                                                                <div className="mt-1 space-y-1">
+                                                                    {model.description && (
+                                                                        <p className="text-xs text-muted-foreground">
+                                                                            {model.description}
+                                                                        </p>
+                                                                    )}
+                                                                    {model.note && (
+                                                                        <p className="text-xs text-amber-600 dark:text-amber-500">
+                                                                            {model.note}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                            )}
                                                         </div>
                                                     </div>
                                                     {!isModelInstalled(model.model_path || '') && model.download_url && (
@@ -1383,7 +1443,7 @@ const ModelsPage = () => {
                                                             Download
                                                         </button>
                                                     )}
-                                                    {!isModelInstalled(model.model_path || '') && model.auto_download && !model.download_url && (
+                                                    {model.auto_download && !model.download_url && !isBackendAvailable(model.backend) && (
                                                         <div className="flex flex-col items-end gap-1">
                                                             <button
                                                                 onClick={() => openRebuildDialog(

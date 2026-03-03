@@ -512,6 +512,122 @@
       },
       "additionalProperties": true
     },
+    "LLMToolRequest": {
+      "type": "object",
+      "required": [
+        "type",
+        "text"
+      ],
+      "properties": {
+        "type": {
+          "const": "llm_tool_request"
+        },
+        "text": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "tool_choice": {
+          "enum": [
+            "auto",
+            "required",
+            "none"
+          ]
+        },
+        "tool_policy": {
+          "enum": [
+            "auto",
+            "strict",
+            "compatible",
+            "off"
+          ]
+        },
+        "protocol_version": {
+          "type": "integer"
+        },
+        "allowed_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "latest_user_text": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "LLMToolResponse": {
+      "type": "object",
+      "required": [
+        "type",
+        "call_id",
+        "tool_calls",
+        "finish_reason"
+      ],
+      "properties": {
+        "type": {
+          "const": "llm_tool_response"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "request_id": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "tool_calls": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "finish_reason": {
+          "enum": [
+            "tool_calls",
+            "stop",
+            "error"
+          ]
+        },
+        "tool_path": {
+          "enum": [
+            "structured",
+            "parser",
+            "repair",
+            "heuristic",
+            "none"
+          ]
+        },
+        "tool_parse_failures": {
+          "type": "integer"
+        },
+        "repair_attempts": {
+          "type": "integer"
+        },
+        "structured_attempts": {
+          "type": "integer"
+        },
+        "protocol_version": {
+          "type": "integer"
+        }
+      },
+      "additionalProperties": true
+    },
     "TTSRequest": {
       "type": "object",
       "required": [
@@ -729,6 +845,12 @@
     },
     {
       "$ref": "#/$defs/LLMResponse"
+    },
+    {
+      "$ref": "#/$defs/LLMToolRequest"
+    },
+    {
+      "$ref": "#/$defs/LLMToolResponse"
     },
     {
       "$ref": "#/$defs/TTSRequest"

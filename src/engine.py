@@ -488,6 +488,7 @@ class Engine:
         # Pipeline runtime structures (Milestone 7): per-call audio queues and runner tasks
         self._pipeline_queues: Dict[str, asyncio.Queue] = {}
         self._pipeline_tasks: Dict[str, asyncio.Task] = {}
+        self._pipeline_transcript_queues: Dict[str, asyncio.Queue] = {}
         # Per-call background tasks (fire-and-forget) that should be cancelled on cleanup
         self._call_bg_tasks: Dict[str, Set[asyncio.Task]] = {}
         # Track calls where a pipeline was explicitly requested via AI_PROVIDER
@@ -2154,9 +2155,9 @@ class Engine:
                     )
 
     def _is_caller_channel(self, channel: dict) -> bool:
-        """Check if this is a caller channel (SIP, PJSIP, etc.)"""
+        """Check if this is a caller channel (SIP, PJSIP, DAHDI, Dongle, etc.)"""
         channel_name = channel.get('name', '')
-        return any(channel_name.startswith(prefix) for prefix in ['SIP/', 'PJSIP/', 'DAHDI/', 'IAX2/'])
+        return any(channel_name.startswith(prefix) for prefix in ['SIP/', 'PJSIP/', 'DAHDI/', 'IAX2/', 'Dongle/'])
 
     def _is_local_channel(self, channel: dict) -> bool:
         """Check if this is a Local channel"""
@@ -2953,7 +2954,12 @@ class Engine:
 
                         if attached and not session.provider_session_active:
                             await self._ensure_provider_session_started(caller_channel_id)
-                        elif not attached:
+                        if attached:
+                            try:
+                                await self._enable_pipeline_talk_detect(session)
+                            except Exception:
+                                logger.debug("TALK_DETECT enable failed after ExternalMedia attach", call_id=caller_channel_id, exc_info=True)
+                        if not attached:
                             logger.error(
                                 "🎯 EXTERNAL MEDIA - Failed to add ExternalMedia channel to bridge (direct attach)",
                                 external_media_id=external_media_id,
@@ -3015,6 +3021,10 @@ class Engine:
                 
                 # Start provider session now that media path is connected
                 await self._ensure_provider_session_started(caller_channel_id)
+                try:
+                    await self._enable_pipeline_talk_detect(session)
+                except Exception:
+                    logger.debug("TALK_DETECT enable failed after AudioSocket attach", call_id=caller_channel_id, exc_info=True)
             else:
                 logger.error("🎯 HYBRID ARI - Failed to add Local channel to bridge", 
                            local_channel_id=local_channel_id,
@@ -3292,6 +3302,13 @@ class Engine:
             start_task = self._provider_start_tasks.pop(session.call_id, None)
             if start_task:
                 start_task.cancel()
+            # Also clean up pipeline tasks and queues
+            for task in getattr(self, "_pipeline_tasks", {}).pop(session.call_id, set()):
+                if task and not task.done():
+                    task.cancel()
+            getattr(self, "_pipeline_queues", {}).pop(session.call_id, None)
+            getattr(self, "_pipeline_transcript_queues", {}).pop(session.call_id, None)
+            self._pipeline_forced.pop(session.call_id, None)
         except Exception:
             pass
         provider = self._call_providers.pop(session.call_id, None)
@@ -3801,7 +3818,7 @@ class Engine:
         if not announcement_template.strip():
             announcement_template = "Hi, this is Ava. I'm transferring {caller_display} regarding {context_name}."
         if not prompt_template.strip():
-            prompt_template = "Press 1 to accept this transfer, or 2 to decline."
+            prompt_template = "Press 1 to accept, or 2 to decline."
 
         try:
             announcement_text = announcement_template.format(**template_vars)
@@ -3979,6 +3996,13 @@ class Engine:
             start_task = self._provider_start_tasks.pop(call_id, None)
             if start_task:
                 start_task.cancel()
+            # Also clean up pipeline tasks and queues
+            for task in getattr(self, "_pipeline_tasks", {}).pop(call_id, set()):
+                if task and not task.done():
+                    task.cancel()
+            getattr(self, "_pipeline_queues", {}).pop(call_id, None)
+            getattr(self, "_pipeline_transcript_queues", {}).pop(call_id, None)
+            self._pipeline_forced.pop(call_id, None)
         except Exception:
             pass
         provider = self._call_providers.pop(call_id, None)
@@ -4289,14 +4313,16 @@ class Engine:
             logger.error("Error handling ChannelVarset", error=str(exc), exc_info=True)
 
     async def _enable_pipeline_talk_detect(self, session: CallSession) -> None:
-        """Enable Asterisk talk detection (TALK_DETECT) on the caller channel for pipelines."""
+        """Enable Asterisk talk detection (TALK_DETECT) on the caller channel.
+
+        Works for both pipeline calls and local-provider streaming calls so that
+        barge-in can trigger even while TTS gating disables RTP audio capture.
+        """
         try:
             cfg = getattr(self.config, "barge_in", None)
             if not cfg or not bool(getattr(cfg, "pipeline_talk_detect_enabled", False)):
                 return
             call_id = session.call_id
-            if not bool(self._pipeline_forced.get(call_id)):
-                return
             channel_id = getattr(session, "caller_channel_id", None)
             if not channel_id:
                 return
@@ -4321,14 +4347,15 @@ class Engine:
             await self._save_session(session)
             if ok:
                 logger.info(
-                    "Enabled TALK_DETECT for pipeline",
+                    "Enabled TALK_DETECT for barge-in",
                     call_id=call_id,
                     channel_id=channel_id,
                     silence_ms=silence_ms,
                     talking_threshold=talking_thr,
+                    is_pipeline=bool(self._pipeline_forced.get(call_id)),
                 )
             else:
-                logger.warning("Failed to enable TALK_DETECT for pipeline", call_id=call_id, channel_id=channel_id)
+                logger.warning("Failed to enable TALK_DETECT", call_id=call_id, channel_id=channel_id)
         except Exception:
             logger.debug("Enable TALK_DETECT failed", call_id=getattr(session, "call_id", None), exc_info=True)
 
@@ -4362,7 +4389,10 @@ class Engine:
             logger.debug("Disable TALK_DETECT failed", call_id=getattr(session, "call_id", None), exc_info=True)
 
     async def _handle_channel_talking_started(self, event: dict) -> None:
-        """Trigger pipeline barge-in when Asterisk detects caller speech during TTS playback."""
+        """Trigger barge-in when Asterisk detects caller speech during TTS playback.
+
+        Works for both pipeline calls and local-provider streaming calls.
+        """
         try:
             channel = event.get("channel", {}) or {}
             channel_id = channel.get("id")
@@ -4373,9 +4403,6 @@ class Engine:
             if not session:
                 return
             call_id = session.call_id
-
-            if not bool(self._pipeline_forced.get(call_id)):
-                return
 
             # Only act when local playback/gating is active; otherwise this is just "caller is talking".
             if bool(getattr(session, "audio_capture_enabled", True)) and not bool(getattr(session, "tts_playing", False)):
@@ -4393,7 +4420,7 @@ class Engine:
             except Exception:
                 tts_elapsed_ms = 0
 
-            initial_protect = int(getattr(cfg, "initial_protection_ms", 200))
+            initial_protect = int(getattr(cfg, "talk_detect_initial_protection_ms", 1500))
             try:
                 if getattr(session, "conversation_state", None) == "greeting":
                     greet_ms = int(getattr(cfg, "greeting_protection_ms", 0))
@@ -4402,6 +4429,12 @@ class Engine:
             except Exception:
                 pass
             if tts_elapsed_ms < initial_protect:
+                logger.debug(
+                    "TalkDetect suppressed (echo protection)",
+                    call_id=call_id,
+                    tts_elapsed_ms=tts_elapsed_ms,
+                    protection_ms=initial_protect,
+                )
                 return
 
             cooldown_ms = int(getattr(cfg, "cooldown_ms", 500))
@@ -4424,7 +4457,7 @@ class Engine:
             logger.debug("ChannelTalkingStarted handler failed", ari_event=event, exc_info=True)
 
     async def _handle_channel_talking_finished(self, event: dict) -> None:
-        """Informational handler for talk detection end events (pipelines)."""
+        """Informational handler for talk detection end events."""
         try:
             channel = event.get("channel", {}) or {}
             channel_id = channel.get("id")
@@ -4434,9 +4467,40 @@ class Engine:
             if not session:
                 return
             call_id = session.call_id
-            if not bool(self._pipeline_forced.get(call_id)):
-                return
             logger.debug("TalkDetect finished", call_id=call_id, channel_id=channel_id)
+            
+            # Explicitly flush STT adapters that support early flushing via TalkDetect
+            import asyncio
+            try:
+                pipeline = None
+                if getattr(self, "pipeline_orchestrator", None):
+                    pipeline = self.pipeline_orchestrator.get_pipeline(call_id, getattr(session, "pipeline_name", None))
+                
+                if pipeline and hasattr(pipeline, "stt_adapter"):
+                    stt = pipeline.stt_adapter
+                    if hasattr(stt, "flush_speech") and callable(stt.flush_speech):
+                        logger.debug("Triggering early STT flush via TalkDetect", call_id=call_id)
+                        # We must dispatch this as a background task because it will do an HTTP request
+                        # and we don't want to block the ARI event loop.
+                        async def _flush_and_process():
+                            try:
+                                transcript = await stt.flush_speech(call_id, pipeline.options_summary().get("stt", {}))
+                                if transcript:
+                                    logger.debug("Early STT flush returned transcript", call_id=call_id, transcript_preview=transcript[:50])
+                                    tq = getattr(self, "_pipeline_transcript_queues", {}).get(call_id)
+                                    if tq:
+                                        try:
+                                            tq.put_nowait(transcript)
+                                        except asyncio.QueueFull:
+                                            pass
+                                    else:
+                                        logger.warning("Pipeline transcript queue not found for early flush", call_id=call_id)
+                            except Exception as e:
+                                logger.error("Background flush_speech failed", call_id=call_id, error=str(e))
+                        asyncio.create_task(_flush_and_process())
+            except Exception as e:
+                logger.warning("Failed to trigger early STT flush", call_id=call_id, error=str(e))
+                
         except Exception:
             logger.debug("ChannelTalkingFinished handler failed", ari_event=event, exc_info=True)
 
@@ -4652,6 +4716,7 @@ class Engine:
                         q.put_nowait(None)
                     except Exception:
                         pass
+                self._pipeline_transcript_queues.pop(call_id, None)
                 try:
                     await self._disable_pipeline_talk_detect(session)
                 except Exception:
@@ -6742,6 +6807,13 @@ class Engine:
                 return
 
             # Stop/flush streaming playback first (prevents tail audio).
+            # Mark end_reason so cleanup skips remainder flush (avoids oversized RTP packets).
+            try:
+                _sinfo = self.streaming_playback_manager.active_streams.get(call_id)
+                if _sinfo is not None:
+                    _sinfo['end_reason'] = 'barge-in'
+            except Exception:
+                pass
             try:
                 await self.streaming_playback_manager.stop_streaming_playback(call_id)
             except Exception:
@@ -9106,7 +9178,16 @@ class Engine:
                 max_attempts = 2
                 for attempt in range(1, max_attempts + 1):
                     try:
-                        use_streaming_playback = self.config.downstream_mode != "file"
+                        # Resolve effective downstream mode: TTS adapter can override global setting.
+                        # getattr fallback keeps this generic — works for any adapter, not just Azure.
+                        _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                        logger.warning(f"DEBUG: TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
+                        if _tts_dm_override == "stream":
+                            use_streaming_playback = True
+                        elif _tts_dm_override == "file":
+                            use_streaming_playback = False
+                        else:
+                            use_streaming_playback = self.config.downstream_mode != "file"
                         tts_format = (pipeline.tts_options or {}).get("format")
                         if not isinstance(tts_format, dict):
                             tts_format = (pipeline.tts_options or {}).get("target_format")
@@ -9347,6 +9428,7 @@ class Engine:
 
             buffer_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=200)
             transcript_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=8)
+            self._pipeline_transcript_queues[call_id] = transcript_queue
 
             use_streaming = bool(stt_options.get("streaming", True))
             if use_streaming:
@@ -9723,7 +9805,15 @@ class Engine:
                     
                     # 1. Synthesize and Play Text (if any)
                     if response_text:
-                        use_streaming_playback = self.config.downstream_mode != "file"
+                        # Resolve effective downstream mode: TTS adapter can override global setting.
+                        _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
+                        logger.warning(f"DEBUG: Main TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
+                        if _tts_dm_override == "stream":
+                            use_streaming_playback = True
+                        elif _tts_dm_override == "file":
+                            use_streaming_playback = False
+                        else:
+                            use_streaming_playback = self.config.downstream_mode != "file"
                         if use_streaming_playback:
                             stream_q: asyncio.Queue = asyncio.Queue(maxsize=256)
                             stream_id: Optional[str] = None
@@ -10131,7 +10221,11 @@ class Engine:
                         return
                     words = len([w for w in aggregated.split() if w])
                     chars = len(aggregated.replace(" ", ""))
-                    threshold_met = words >= 3 or chars >= 12
+                    
+                    min_words = int((pipeline.llm_options or {}).get("aggregation_min_words", 3))
+                    min_chars = int((pipeline.llm_options or {}).get("aggregation_min_chars", 12))
+                    threshold_met = words >= min_words or chars >= min_chars
+                    
                     if not threshold_met:
                         if force:
                             pending_segments.clear()

@@ -89,7 +89,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Google Vertex AI Live API Support**: Enterprise-grade authentication for Google Live API using GCP service accounts. Switch between Developer API (API key) and Vertex AI (OAuth2) modes via Admin UI toggle. Includes credential upload/verify/delete endpoints, environment injection, and preflight secrets directory validation ([PR #235](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/pull/235)).
+- **Google Vertex AI Live API Support**: Enterprise-grade authentication for Google Live API using GCP service accounts. Switch between Developer API (API key) and Vertex AI (OAuth2) modes via Admin UI toggle. Includes credential upload/verify/delete endpoints, environment injection, and preflight secrets directory validation ([PR #235](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/pull/235)).
 - **Admin UI Vertex AI Configuration**: New Vertex AI section in Google Live provider settings with project/location selectors, credential upload widget, and real-time verification status.
 - **Preflight Secrets Directory Check**: `preflight.sh` now validates and auto-creates `./secrets/` with correct ownership and permissions (2770) for service account JSON files.
 - **Golden Baseline Config**: `config/ai-agent.golden-google-live.yaml` updated with Vertex AI configuration examples.
@@ -1475,7 +1475,7 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 ### Links
 
-- **Repository**: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk
+- **Repository**: https://github.com/hkjarral/Asterisk-AI-Voice-Agent
 - **Tool Calling Guide**: [docs/TOOL_CALLING_GUIDE.md](docs/TOOL_CALLING_GUIDE.md)
 - **FreePBX Guide**: [docs/FreePBX-Integration-Guide.md](docs/FreePBX-Integration-Guide.md)
 - **CLI Tools Guide**: [cli/README.md](cli/README.md)
@@ -1486,8 +1486,8 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 
 - **v6.3.1** (2026-02-23) - Local AI Server onboarding + model lifecycle hardening, tool gateway/guardrails, model catalog + UI rebuild flows, CLI verification tooling, expanded docs and audits
 - **v6.2.2** (2026-02-20) - Vertex AI credentials auto-management, ADC graceful fallback, secrets dir permissions, install.sh YAML dupe fix, dashboard pipeline variant display
-- **v6.2.1** (2026-02-20) - Google Vertex AI Live API Support, credential upload/verify/delete, preflight secrets dir check
-- **v6.2.0** (2026-02-15) - Google Live API integration, Admin UI provider settings, golden baseline configs
+- **v6.2.1** (2026-02-19) - Google Vertex AI Live API Support, credential upload/verify/delete, preflight secrets dir check
+- **v6.2.0** (2026-02-14) - Telnyx LLM provider, NumPy resampler, community hardening
 - **v5.3.1** (2026-02-01) - Phase Tools (HTTP + webhooks) + Deepgram language + Admin UI + RCA enhancements + stability fixes
 - **v5.2.5** (2026-01-28) - Stable Updates improvements + updater image publishing + AudioSocket default
 - **v5.2.4** (2026-01-26) - Admin UI Docker Services hardening + remove background update checks
@@ -1504,24 +1504,24 @@ Version 4.1 introduces **unified tool calling architecture** enabling AI agents 
 - **v4.0.0** (2025-10-29) - Modular pipeline architecture, production monitoring, golden baselines
 - **v3.0.0** (2025-09-16) - Modular pipeline architecture, file based playback
 
-[Unreleased]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v6.3.1...HEAD
-[6.3.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v6.2.2...v6.3.1
-[6.2.2]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v6.2.1...v6.2.2
-[6.2.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v6.2.0...v6.2.1
-[6.2.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/compare/v6.1.1...v6.2.0
-[6.1.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v6.1.1
-[6.0.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v6.0.0
-[5.3.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.3.1
-[5.2.5]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.2.5
-[5.2.4]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.2.4
-[5.2.3]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.2.3
-[5.2.2]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.2.2
-[5.2.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.2.1
-[5.1.7]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.1.7
-[5.1.6]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.1.6
-[5.0.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v5.0.0
-[4.6.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v4.6.0
-[4.5.2]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v4.5.2
-[4.5.1]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v4.5.1
-[4.5.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v4.5.0
-[4.0.0]: https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/releases/tag/v4.0.0
+[Unreleased]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.3.1...HEAD
+[6.3.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.2...v6.3.1
+[6.2.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.1...v6.2.2
+[6.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.2.0...v6.2.1
+[6.2.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/compare/v6.1.1...v6.2.0
+[6.1.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v6.1.1
+[6.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v6.0.0
+[5.3.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.3.1
+[5.2.5]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.5
+[5.2.4]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.4
+[5.2.3]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.3
+[5.2.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.2
+[5.2.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.2.1
+[5.1.7]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.7
+[5.1.6]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.1.6
+[5.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v5.0.0
+[4.6.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v4.6.0
+[4.5.2]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v4.5.2
+[4.5.1]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v4.5.1
+[4.5.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v4.5.0
+[4.0.0]: https://github.com/hkjarral/Asterisk-AI-Voice-Agent/releases/tag/v4.0.0

@@ -162,72 +162,84 @@ const LocalProviderForm: React.FC<LocalProviderFormProps> = ({ config, onChange 
                             )}
                         </div>
                     )}
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                    <div className="space-y-0 divide-y divide-blue-200/50 dark:divide-blue-800/30">
                         {/* STT Status */}
-                        <div className="space-y-1">
-                            <span className="text-muted-foreground">STT:</span>
-                            <div className="font-medium flex items-center gap-2">
+                        <div className="py-2.5 first:pt-0">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground w-8 flex-shrink-0">STT</span>
                                 {currentStatus.models?.stt?.loaded ? (
-                                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0"></span>
                                 ) : (
-                                    <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 flex-shrink-0"></span>
                                 )}
-                                <span>{currentStatus.stt_backend?.charAt(0).toUpperCase() + currentStatus.stt_backend?.slice(1) || 'Unknown'}</span>
+                                <span className="text-sm font-medium">
+                                    {currentStatus.stt_backend?.charAt(0).toUpperCase() + currentStatus.stt_backend?.slice(1) || 'Unknown'}
+                                </span>
                                 {currentStatus.kroko_embedded && (
-                                    <span className="text-xs px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 rounded">
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-600 rounded-full">
                                         Embedded:{currentStatus.kroko_port || 6006}
                                     </span>
                                 )}
                                 {currentStatus.stt_backend === 'kroko' && !currentStatus.kroko_embedded && (
-                                    <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded">Cloud</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded-full">Cloud</span>
                                 )}
                             </div>
-                            <div className="text-xs text-muted-foreground truncate" title={currentStatus.models?.stt?.path}>
-                                {currentStatus.models?.stt?.path || 'Not configured'}
-                            </div>
+                            {currentStatus.models?.stt?.path && (
+                                <div className="ml-8 text-xs text-muted-foreground truncate" title={currentStatus.models.stt.path}>
+                                    {currentStatus.models.stt.path}
+                                </div>
+                            )}
                         </div>
 
                         {/* LLM Status */}
-                        <div className="space-y-1">
-                            <span className="text-muted-foreground">LLM:</span>
-                            <div className="font-medium flex items-center gap-2">
+                        <div className="py-2.5">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground w-8 flex-shrink-0">LLM</span>
                                 {currentStatus.models?.llm?.loaded ? (
-                                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0"></span>
                                 ) : (
-                                    <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 flex-shrink-0"></span>
                                 )}
-                                <span className="truncate">{currentStatus.models?.llm?.path?.split('/').pop() || 'Not loaded'}</span>
+                                <span className="text-sm font-medium truncate">
+                                    {currentStatus.models?.llm?.path?.split('/').pop() || 'Not loaded'}
+                                </span>
                             </div>
-                            <div className="text-xs text-muted-foreground">
-                                ctx:{currentStatus.models?.llm?.config?.context || '-'} threads:{currentStatus.models?.llm?.config?.threads || '-'}
+                            <div className="ml-8 flex items-center gap-3 text-xs text-muted-foreground mt-0.5">
+                                <span>ctx: <span className="font-mono">{currentStatus.models?.llm?.config?.context || '—'}</span></span>
+                                <span>threads: <span className="font-mono">{currentStatus.models?.llm?.config?.threads || '—'}</span></span>
+                                {currentStatus.models?.llm?.config?.max_tokens && (
+                                    <span>max_tok: <span className="font-mono">{currentStatus.models.llm.config.max_tokens}</span></span>
+                                )}
                             </div>
                         </div>
 
                         {/* TTS Status */}
-                        <div className="space-y-1">
-                            <span className="text-muted-foreground">TTS:</span>
-                            <div className="font-medium flex items-center gap-2">
+                        <div className="py-2.5 last:pb-0">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[10px] uppercase tracking-wider text-muted-foreground w-8 flex-shrink-0">TTS</span>
                                 {currentStatus.models?.tts?.loaded ? (
-                                    <span className="w-2 h-2 rounded-full bg-green-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-shrink-0"></span>
                                 ) : (
-                                    <span className="w-2 h-2 rounded-full bg-yellow-500"></span>
+                                    <span className="w-1.5 h-1.5 rounded-full bg-yellow-500 flex-shrink-0"></span>
                                 )}
-                                <span>{currentStatus.tts_backend?.charAt(0).toUpperCase() + currentStatus.tts_backend?.slice(1) || 'Unknown'}</span>
+                                <span className="text-sm font-medium">
+                                    {currentStatus.tts_backend?.charAt(0).toUpperCase() + currentStatus.tts_backend?.slice(1) || 'Unknown'}
+                                </span>
                                 {currentStatus.kokoro_mode === 'local' && (
-                                    <span className="text-xs px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-600 rounded">Local</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-green-100 dark:bg-green-900/30 text-green-600 rounded-full">Local</span>
                                 )}
                                 {currentStatus.kokoro_mode === 'api' && (
-                                    <span className="text-xs px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded">API</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-600 rounded-full">API</span>
                                 )}
                             </div>
-                            <div className="text-xs text-muted-foreground">
+                            <div className="ml-8 text-xs text-muted-foreground">
                                 {currentStatus.kokoro_voice ? `Voice: ${currentStatus.kokoro_voice}` : currentStatus.models?.tts?.path || 'Not configured'}
                             </div>
                         </div>
                     </div>
                 </div>
             )}
-            {statusLoading && (
+            {statusLoading && !currentStatus && (
                 <div className="bg-muted/50 p-4 rounded-md animate-pulse">
                     <div className="h-4 bg-muted rounded w-1/3 mb-2"></div>
                     <div className="h-3 bg-muted rounded w-full"></div>

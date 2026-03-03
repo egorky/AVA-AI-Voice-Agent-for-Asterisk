@@ -2218,31 +2218,76 @@ check_gpu() {
     if ! command -v nvidia-container-cli &>/dev/null; then
         log_warn "nvidia-container-toolkit not installed"
         log_info "  GPU detected but Docker cannot use it without the toolkit"
+        log_info "  Attempting automatic installation..."
         
-        # Offer install instructions based on OS
+        # Auto-install based on OS
+        local toolkit_installed=false
         case "$OS_FAMILY" in
             debian)
-                log_info "  Install with:"
-                log_info "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
-                log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
-                log_info "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
-                log_info "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
-                log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
-                log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                log_info "    sudo systemctl restart docker"
+                # Add NVIDIA GPG key (skip if already exists)
+                if [ ! -f /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg ]; then
+                    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
+                        gpg --batch --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg 2>/dev/null || true
+                fi
+                # Add repo
+                curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \
+                    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > \
+                    /etc/apt/sources.list.d/nvidia-container-toolkit.list 2>/dev/null || true
+                # Install
+                if apt-get update -qq && apt-get install -y nvidia-container-toolkit; then
+                    toolkit_installed=true
+                fi
                 ;;
             rhel)
-                log_info "  Install with:"
-                log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \\"
-                log_info "      sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
-                log_info "    sudo yum install -y nvidia-container-toolkit"
-                log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
-                log_info "    sudo systemctl restart docker"
+                # Add repo
+                curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \
+                    tee /etc/yum.repos.d/nvidia-container-toolkit.repo > /dev/null 2>&1 || true
+                # Install
+                if yum install -y nvidia-container-toolkit; then
+                    toolkit_installed=true
+                fi
                 ;;
         esac
-        log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
-        update_env_gpu "true"  # GPU exists, just toolkit missing
-        return 0
+        
+        if [ "$toolkit_installed" = true ]; then
+            log_ok "nvidia-container-toolkit installed successfully"
+            # Configure Docker runtime
+            log_info "  Configuring Docker to use nvidia runtime..."
+            if nvidia-ctk runtime configure --runtime=docker 2>/dev/null; then
+                log_ok "Docker nvidia runtime configured"
+                # Restart Docker to apply changes
+                if systemctl restart docker 2>/dev/null; then
+                    log_ok "Docker restarted with nvidia runtime"
+                else
+                    log_warn "Could not restart Docker - please restart manually: sudo systemctl restart docker"
+                fi
+            else
+                log_warn "Could not configure nvidia runtime - please run: sudo nvidia-ctk runtime configure --runtime=docker"
+            fi
+        else
+            log_warn "Automatic installation failed. Install manually:"
+            case "$OS_FAMILY" in
+                debian)
+                    log_info "    curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | \\"
+                    log_info "      sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \\"
+                    log_info "      sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list"
+                    log_info "    sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit"
+                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                    log_info "    sudo systemctl restart docker"
+                    ;;
+                rhel)
+                    log_info "    curl -s -L https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo | \\"
+                    log_info "      sudo tee /etc/yum.repos.d/nvidia-container-toolkit.repo"
+                    log_info "    sudo yum install -y nvidia-container-toolkit"
+                    log_info "    sudo nvidia-ctk runtime configure --runtime=docker"
+                    log_info "    sudo systemctl restart docker"
+                    ;;
+            esac
+            log_info "  Docs: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
+            update_env_gpu "true"  # GPU exists, just toolkit missing
+            return 0
+        fi
     fi
     
     log_ok "nvidia-container-toolkit installed"

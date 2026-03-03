@@ -11,3 +11,9 @@ __all__ = [
     "SendEmailSummaryTool",
     "RequestTranscriptTool",
 ]
+
+try:
+    from src.tools.business.gcal_tool import GCalendarTool
+    __all__.append("GCalendarTool")
+except ImportError:
+    pass

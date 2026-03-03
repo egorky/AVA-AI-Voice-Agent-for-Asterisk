@@ -1457,8 +1457,37 @@ class GoogleLiveProvider(AIProviderInterface):
             has_output=bool(content.get("outputTranscription")),
             has_turn_complete=bool(content.get("turnComplete")),
             has_model_turn=bool(content.get("modelTurn")),
+            interrupted=bool(content.get("interrupted")),
         )
-        
+
+        # Official Google barge-in signal: serverContent.interrupted = true
+        # Per docs: "When VAD detects an interruption, the ongoing generation is
+        # canceled and discarded. The server sends a BidiGenerateContentServerContent
+        # message to report the interruption."
+        # NOTE: In telephony (no client-side AEC), gating sends silence during TTS
+        # so this rarely fires. Local VAD fallback is the primary barge-in mechanism.
+        # When it does fire, emit ProviderBargeIn so the engine flushes playback.
+        if content.get("interrupted") is True:
+            logger.info(
+                "Google Live server-side interruption detected",
+                call_id=self._call_id,
+                in_audio_burst=self._in_audio_burst,
+            )
+            if self._in_audio_burst:
+                self._in_audio_burst = False
+            try:
+                if self.on_event:
+                    await self.on_event(
+                        {
+                            "type": "ProviderBargeIn",
+                            "call_id": self._call_id,
+                            "provider": "google_live",
+                            "event": "interrupted",
+                        }
+                    )
+            except Exception:
+                logger.debug("Failed to emit ProviderBargeIn on interrupted", call_id=self._call_id, exc_info=True)
+
         # Handle input transcription (user speech) - per official API docs
         # CONFIRMED BY TESTING: API sends INCREMENTAL fragments, not cumulative updates
         # Despite documentation suggesting cumulative behavior, actual API sends:

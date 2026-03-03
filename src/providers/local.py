@@ -566,6 +566,29 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
                 tool_path=tool_path,
             )
 
+    _END_CALL_MARKERS = (
+        "no transcript", "no transcript needed", "don't send a transcript",
+        "no thanks", "no thank you", "thank you", "thanks",
+        "that's all", "nothing else", "end call", "hang up",
+        "goodbye", "bye", "have a good day", "have a great day",
+        "take care", "talk to you later",
+    )
+
+    def _user_has_end_call_intent(self, call_id: Optional[str]) -> bool:
+        """Check if the last user transcript signals end-of-call intent."""
+        user_text = (self._last_user_transcript_by_call.get(call_id or "", "") or "").strip().lower()
+        if not user_text:
+            return False
+        for marker in self._END_CALL_MARKERS:
+            m = marker.lower()
+            if " " in m:
+                if m in user_text:
+                    return True
+            else:
+                if re.search(rf"(?:^|\b){re.escape(m)}(?:\b|$)", user_text):
+                    return True
+        return False
+
     async def _process_llm_text_fallback(
         self,
         *,
@@ -578,7 +601,14 @@ class LocalProvider(AIProviderInterface, ProviderCapabilitiesMixin):
         repair_attempts = 0
         allowed = sorted(self._allowed_tools)
         if self._effective_tool_policy == "off":
+            # Policy=off disables structured tool dispatch, but hangup_call is a
+            # heuristic-only tool that doesn't require LLM tool-calling capability.
+            # Check if the user expressed end-of-call intent and emit hangup_call.
             tool_calls = None
+            if "hangup_call" in self._allowed_tools and self._user_has_end_call_intent(call_id):
+                tool_calls = [{"name": "hangup_call", "parameters": {"farewell_message": (clean_text or llm_text or "Goodbye.").strip() or "Goodbye."}}]
+                tool_path = "heuristic"
+                logger.info("hangup_call heuristic triggered (policy=off)", call_id=call_id)
         elif not tool_calls and allowed and has_tool_intent_markers(llm_text, allowed):
             repair_attempts = 1
             tool_path = "repair"

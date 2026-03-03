@@ -825,6 +825,8 @@ class StreamingPlaybackManager:
         try:
             fallback_timeout = self.fallback_timeout_ms / 1000.0
             last_send_time = time.time()
+            last_upsert_time = time.time()
+            bytes_since_last_upsert = 0
             
             while True:
                 try:
@@ -843,6 +845,16 @@ class StreamingPlaybackManager:
                             sentinel_sent = True
                         except Exception:
                             pass
+                        
+                        if bytes_since_last_upsert > 0:
+                            try:
+                                sess = await self.session_store.get_by_call_id(call_id)
+                                if sess:
+                                    sess.streaming_bytes_sent += bytes_since_last_upsert
+                                    sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
+                                    await self.session_store.upsert_call(sess)
+                            except Exception:
+                                pass
                         break
 
                     # Update timing and metrics
@@ -857,11 +869,16 @@ class StreamingPlaybackManager:
                         # Track per-call queued total as well as segment-local queued_bytes
                         if info is not None:
                             info['queued_total_bytes'] = int(info.get('queued_total_bytes', 0) or 0) + len(chunk)
-                        sess = await self.session_store.get_by_call_id(call_id)
-                        if sess:
-                            sess.streaming_bytes_sent += len(chunk)
-                            sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
-                            await self.session_store.upsert_call(sess)
+                        
+                        bytes_since_last_upsert += len(chunk)
+                        if time.time() - last_upsert_time >= 1.0:
+                            sess = await self.session_store.get_by_call_id(call_id)
+                            if sess:
+                                sess.streaming_bytes_sent += bytes_since_last_upsert
+                                sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
+                                await self.session_store.upsert_call(sess)
+                            bytes_since_last_upsert = 0
+                            last_upsert_time = time.time()
                     except Exception:
                         logger.debug("Streaming metrics update failed", call_id=call_id)
 
@@ -3487,7 +3504,17 @@ class StreamingPlaybackManager:
             # Flush any remainder bytes as a final frame
             try:
                 rem = self.frame_remainders.get(call_id, b"") or b""
-                if rem:
+                # Skip remainder flush when stream was interrupted (barge-in) — the
+                # caller spoke over the agent so sending leftover audio is wrong and
+                # dumping a large remainder as a single oversized RTP packet causes
+                # robotic audio artifacts on Asterisk.
+                end_reason = ""
+                try:
+                    end_reason = str((self.active_streams.get(call_id) or {}).get('end_reason', '') or '')
+                except Exception:
+                    pass
+                barge_in_end = any(k in end_reason for k in ("barge", "interrupt", "cancel"))
+                if rem and not barge_in_end:
                     self._decrement_buffered_bytes(call_id, len(rem))
                     if self.audio_transport == "audiosocket":
                         fmt = (
@@ -3514,7 +3541,25 @@ class StreamingPlaybackManager:
                         # small pacing to let Asterisk play the last frame
                         await asyncio.sleep(self.chunk_size_ms / 1000.0)
                     else:
-                        await self._send_audio_chunk(call_id, stream_id, rem)
+                        # ExternalMedia/RTP: flush at most one frame to avoid
+                        # sending oversized RTP packets that cause audio artifacts.
+                        frame_size = self._frame_size_bytes(call_id)
+                        filler_byte = b"\xFF" if self._is_mulaw(
+                            self._canonicalize_encoding(
+                                (self.active_streams.get(call_id) or {}).get('target_format')
+                            ) or "ulaw"
+                        ) else b"\x00"
+                        if len(rem) < frame_size:
+                            rem = rem + (filler_byte * (frame_size - len(rem)))
+                        await self._send_audio_chunk(call_id, stream_id, rem[:frame_size])
+                elif rem and barge_in_end:
+                    self._decrement_buffered_bytes(call_id, len(rem))
+                    logger.debug(
+                        "Skipped remainder flush (barge-in)",
+                        call_id=call_id,
+                        discarded_bytes=len(rem),
+                        end_reason=end_reason,
+                    )
             except Exception:
                 logger.debug("Remainder flush failed", call_id=call_id, stream_id=stream_id)
 

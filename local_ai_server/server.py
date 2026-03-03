@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import audioop
 import base64
 import json
 import logging
@@ -749,6 +750,8 @@ class LocalAIServer:
         self._llm_lock = asyncio.Lock()
         # Lock to serialize Faster-Whisper inference (CTranslate2 is NOT thread-safe)
         self._faster_whisper_lock = asyncio.Lock()
+        # Lock to serialize Whisper.cpp inference (avoid concurrent model access).
+        self._whisper_cpp_lock = asyncio.Lock()
         # Component -> last startup error (used for degraded mode status/logging)
         self.startup_errors: Dict[str, str] = {}
         # Track runtime fallbacks (e.g. CUDA -> CPU) for operator visibility.
@@ -1032,6 +1035,8 @@ class LocalAIServer:
         self.llm_system_prompt = config.llm_system_prompt
         self.llm_stop_tokens = list(config.llm_stop_tokens)
         self.llm_use_mlock = config.llm_use_mlock
+        self.llm_chat_format = config.llm_chat_format
+        self.llm_voice_preamble = config.llm_voice_preamble
         self.tool_gateway_enabled = bool(config.tool_gateway_enabled)
 
         # TTS configuration
@@ -1552,7 +1557,7 @@ class LocalAIServer:
                     pass
 
                 try:
-                    self.llm_model = Llama(
+                    llama_kwargs = dict(
                         model_path=self.llm_model_path,
                         n_ctx=ctx,
                         n_threads=self.llm_threads,
@@ -1561,8 +1566,10 @@ class LocalAIServer:
                         verbose=False,
                         use_mmap=True,
                         use_mlock=self.llm_use_mlock,
-                        add_bos=False,
                     )
+                    if self.llm_chat_format:
+                        llama_kwargs["chat_format"] = self.llm_chat_format
+                    self.llm_model = Llama(**llama_kwargs)
                     loaded = True
                     break
                 except Exception as exc:
@@ -1594,13 +1601,14 @@ class LocalAIServer:
 
             logging.info("✅ LLM model loaded: %s (%s)", self.llm_model_path, gpu_status)
             logging.info(
-                "📊 LLM Config: ctx=%s, threads=%s, batch=%s, max_tokens=%s, temp=%s, gpu_layers=%s",
+                "📊 LLM Config: ctx=%s, threads=%s, batch=%s, max_tokens=%s, temp=%s, gpu_layers=%s, chat_format=%s",
                 self.llm_context,
                 self.llm_threads,
                 self.llm_batch,
                 self.llm_max_tokens,
                 self.llm_temperature,
                 gpu_layers,
+                self.llm_chat_format or "(legacy-phi)",
             )
 
             if can_auto_ctx:
@@ -1678,20 +1686,39 @@ class LocalAIServer:
             "Do not add any other text."
         )
         try:
-            output = self.llm_model(
-                probe_prompt,
-                max_tokens=64,
-                stop=self.llm_stop_tokens,
-                echo=False,
-                temperature=0.0,
-                top_p=1.0,
-                repeat_penalty=self.llm_repeat_penalty,
-            )
-            raw = (
-                output.get("choices", [{}])[0].get("text", "").strip()
-                if isinstance(output, dict)
-                else ""
-            )
+            use_chat_path = bool(self.llm_chat_format)
+            if use_chat_path:
+                chat_output = self.llm_model.create_chat_completion(
+                    messages=[
+                        {"role": "system", "content": "You output tool calls in the exact format requested. No extra text."},
+                        {"role": "user", "content": probe_prompt},
+                    ],
+                    max_tokens=64,
+                    stop=self.llm_stop_tokens,
+                    temperature=0.0,
+                    top_p=1.0,
+                    repeat_penalty=self.llm_repeat_penalty,
+                )
+                raw = (
+                    chat_output.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                    if isinstance(chat_output, dict)
+                    else ""
+                )
+            else:
+                output = self.llm_model(
+                    probe_prompt,
+                    max_tokens=64,
+                    stop=self.llm_stop_tokens,
+                    echo=False,
+                    temperature=0.0,
+                    top_p=1.0,
+                    repeat_penalty=self.llm_repeat_penalty,
+                )
+                raw = (
+                    output.get("choices", [{}])[0].get("text", "").strip()
+                    if isinstance(output, dict)
+                    else ""
+                )
             lowered = (raw or "").lower()
             has_primary_wrapper = "<tool_call" in lowered and "</tool_call>" in lowered
             has_named_wrapper = "<hangup_call" in lowered and "</hangup_call>" in lowered
@@ -1768,19 +1795,20 @@ class LocalAIServer:
         try:
             session = SessionContext(call_id="startup-latency")
             sample_text = "Hello, can you hear me?"
-            prompt, prompt_tokens, truncated, raw_tokens = self._prepare_llm_prompt(
+            prompt, prompt_tokens, truncated, raw_tokens, chat_messages = self._prepare_llm_prompt(
                 session, sample_text
             )
             loop = asyncio.get_running_loop()
             started = loop.time()
             logging.info(
-                "🧪 LLM WARMUP START - Running startup latency check (prompt_tokens=%s raw_tokens=%s model=%s ctx=%s batch=%s max_tokens<=%s)",
+                "🧪 LLM WARMUP START - Running startup latency check (prompt_tokens=%s raw_tokens=%s model=%s ctx=%s batch=%s max_tokens<=%s chat_format=%s)",
                 prompt_tokens,
                 raw_tokens,
                 os.path.basename(self.llm_model_path),
                 self.llm_context,
                 self.llm_batch,
                 min(self.llm_max_tokens, 32),
+                self.llm_chat_format or "(legacy-phi)",
             )
 
             # Heartbeat: log progress while the warm-up runs so users see activity
@@ -1805,16 +1833,27 @@ class LocalAIServer:
 
             hb_task = asyncio.create_task(_heartbeat())
 
-            await asyncio.to_thread(
-                self.llm_model,
-                prompt,
-                max_tokens=min(self.llm_max_tokens, 32),
-                stop=self.llm_stop_tokens,
-                echo=False,
-                temperature=self.llm_temperature,
-                top_p=self.llm_top_p,
-                repeat_penalty=self.llm_repeat_penalty,
-            )
+            if self.llm_chat_format:
+                await asyncio.to_thread(
+                    self.llm_model.create_chat_completion,
+                    messages=chat_messages,
+                    max_tokens=min(self.llm_max_tokens, 32),
+                    stop=self.llm_stop_tokens,
+                    temperature=self.llm_temperature,
+                    top_p=self.llm_top_p,
+                    repeat_penalty=self.llm_repeat_penalty,
+                )
+            else:
+                await asyncio.to_thread(
+                    self.llm_model,
+                    prompt,
+                    max_tokens=min(self.llm_max_tokens, 32),
+                    stop=self.llm_stop_tokens,
+                    echo=False,
+                    temperature=self.llm_temperature,
+                    top_p=self.llm_top_p,
+                    repeat_penalty=self.llm_repeat_penalty,
+                )
 
             latency_ms = round((loop.time() - started) * 1000.0, 2)
             done.set()
@@ -2285,8 +2324,52 @@ class LocalAIServer:
             logging.error("STT processing failed: %s", exc, exc_info=True)
             return ""
 
+    async def process_llm_chat(self, messages: List[Dict[str, str]]) -> str:
+        """Run LLM inference via create_chat_completion (chat_format mode).
+
+        Uses the model's configured chat_format to automatically apply the
+        correct chat template for the loaded model (Llama-3, Phi-3, Mistral, etc.).
+        """
+        async with self._llm_lock:
+            try:
+                if not self.llm_model:
+                    logging.warning("LLM model not loaded, using fallback")
+                    return "I'm here to help you. How can I assist you today?"
+
+                max_tokens = self.llm_max_tokens
+                loop = asyncio.get_running_loop()
+                started = loop.time()
+                output = await asyncio.to_thread(
+                    self.llm_model.create_chat_completion,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    stop=self.llm_stop_tokens,
+                    temperature=self.llm_temperature,
+                    top_p=self.llm_top_p,
+                    repeat_penalty=self.llm_repeat_penalty,
+                )
+
+                choices = output.get("choices", []) if isinstance(output, dict) else []
+                if not choices:
+                    logging.warning("🤖 LLM RESULT (chat) - No choices returned, using fallback response")
+                    return "I'm here to help you. How can I assist you today?"
+
+                message = choices[0].get("message", {})
+                response = (message.get("content") or "").strip()
+                latency_ms = round((loop.time() - started) * 1000.0, 2)
+                logging.info(
+                    "🤖 LLM RESULT (chat) - Completed in %s ms tokens=%s",
+                    latency_ms,
+                    len(response.split()),
+                )
+                return response
+
+            except Exception as exc:
+                logging.error("LLM chat processing failed: %s", exc, exc_info=True)
+                return "I'm here to help you. How can I assist you today?"
+
     async def process_llm(self, prompt: str) -> str:
-        """Run LLM inference using the prepared Phi-style prompt.
+        """Run LLM inference using a raw prompt string (legacy Phi-style path).
         
         Uses a lock to serialize inference calls - llama-cpp is NOT thread-safe
         and will segfault if multiple threads try to use the model simultaneously.
@@ -2465,11 +2548,24 @@ class LocalAIServer:
 
         return best, True
 
+    def _get_effective_system_prompt(self) -> str:
+        """Compose the effective system prompt by prepending voice preamble (if set)."""
+        system = (self.llm_system_prompt or "").strip()
+        preamble = (self.llm_voice_preamble or "").strip()
+        if preamble and system:
+            return f"{preamble}\n\n{system}"
+        return preamble or system
+
     def _prepare_llm_prompt(
         self, session: SessionContext, new_turn: str
-    ) -> Tuple[str, int, bool, int]:
+    ) -> Tuple[str, int, bool, int, List[Dict[str, str]]]:
         """
         Append a user turn, trim dialog history to fit context, and report token counts.
+
+        Returns (prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages).
+        - prompt_text: legacy Phi-style raw string (used when chat_format is empty)
+        - chat_messages: OpenAI-style messages list with system/user/assistant roles
+          (used when chat_format is set, via create_chat_completion)
 
         Important: We keep a true chat transcript (user/assistant turns) rather than
         concatenating all user turns into a single mega-message. Concatenation causes
@@ -2481,7 +2577,9 @@ class LocalAIServer:
         if new_turn:
             candidate_messages.append({"role": "user", "content": new_turn})
 
-        raw_prompt = self._build_phi_chat_prompt(candidate_messages, self.llm_system_prompt or "")
+        effective_system = self._get_effective_system_prompt()
+
+        raw_prompt = self._build_phi_chat_prompt(candidate_messages, effective_system)
         raw_prompt = self._strip_leading_bos(raw_prompt)
         raw_tokens = self._count_prompt_tokens(raw_prompt)
 
@@ -2495,14 +2593,13 @@ class LocalAIServer:
             return self._count_prompt_tokens(prompt)
 
         # Trim oldest turns until prompt fits.
-        while trimmed_messages and _count_with_system(self.llm_system_prompt or "", trimmed_messages) > max_prompt_tokens:
-            # Drop one message at a time from the front; prefer dropping in pairs if aligned.
+        while trimmed_messages and _count_with_system(effective_system, trimmed_messages) > max_prompt_tokens:
             trimmed_messages.pop(0)
             truncated = True
 
         safety_margin = 8
         max_allowed_prompt_tokens = max(self.llm_context - safety_margin, 32)
-        system_prompt = (self.llm_system_prompt or "").strip()
+        system_prompt = effective_system
 
         prompt_text = self._build_phi_chat_prompt(trimmed_messages, system_prompt)
         prompt_text = self._strip_leading_bos(prompt_text)
@@ -2536,10 +2633,16 @@ class LocalAIServer:
                 max_allowed_prompt_tokens,
             )
 
+        # Build chat_messages for create_chat_completion path.
+        chat_messages: List[Dict[str, str]] = []
+        if system_prompt:
+            chat_messages.append({"role": "system", "content": system_prompt})
+        chat_messages.extend(trimmed_messages)
+
         # Update session state. Keep llm_user_turns in sync for existing logs/metrics.
         session.llm_messages = trimmed_messages
         session.llm_user_turns = [m.get("content", "") for m in trimmed_messages if (m.get("role") or "").lower() == "user"]
-        return prompt_text, prompt_tokens, truncated, raw_tokens
+        return prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages
 
     async def process_tts(self, text: str) -> bytes:
         """Process TTS with 8kHz uLaw generation - routes to appropriate backend."""
@@ -2775,6 +2878,16 @@ class LocalAIServer:
         session.last_partial = ""
         session.partial_emitted = False
         session.audio_buffer = b""
+        # Batch STT segmentation state (Whisper family).
+        session.stt_segment_preroll = b""
+        session.stt_segment_buffer = b""
+        session.stt_segment_last_voice_mono = 0.0
+        session.stt_segment_in_speech = False
+        # Legacy per-backend buffers (kept for safety; segmenter no longer uses them).
+        if hasattr(session, "fw_audio_buffer"):
+            session.fw_audio_buffer = b""
+        if hasattr(session, "wcpp_audio_buffer"):
+            session.wcpp_audio_buffer = b""
         session.last_request_meta.clear()
         session.last_final_text = last_text
         session.last_final_norm = _normalize_text(last_text)
@@ -2841,72 +2954,13 @@ class LocalAIServer:
         audio_data: bytes,
         input_rate: int,
     ) -> List[Dict[str, Any]]:
-        """Feed audio into Faster-Whisper and return transcript updates."""
-        if not self.faster_whisper_backend:
-            logging.error("Faster-Whisper STT backend not initialized")
-            return []
-
-        # Buffer audio for Faster-Whisper (needs sufficient audio for transcription)
-        if not hasattr(session, 'fw_audio_buffer'):
-            session.fw_audio_buffer = b""
-        
-        # Resample to 16kHz if needed
-        if input_rate != PCM16_TARGET_RATE:
-            audio_bytes = await asyncio.to_thread(
-                self.audio_processor.resample_audio,
-                audio_data,
-                input_rate,
-                PCM16_TARGET_RATE,
-                "raw",
-                "raw",
-            )
-        else:
-            audio_bytes = audio_data
-
-        session.fw_audio_buffer += audio_bytes
-        
-        # Only process when we have enough audio (e.g., 1 second = 32000 bytes at 16kHz mono 16-bit)
-        MIN_BUFFER_SIZE = 32000  # 1 second of audio
-        if len(session.fw_audio_buffer) < MIN_BUFFER_SIZE:
-            return []
-
-        updates: List[Dict[str, Any]] = []
-        
-        try:
-            # Acquire lock to prevent concurrent access (CTranslate2 is NOT thread-safe)
-            async with self._faster_whisper_lock:
-                # Reset backend's internal buffer since we manage our own buffer
-                await asyncio.to_thread(self.faster_whisper_backend.reset)
-                
-                # Process buffered audio with Faster-Whisper
-                await asyncio.to_thread(
-                    self.faster_whisper_backend.process_audio,
-                    session.fw_audio_buffer
-                )
-                
-                # Call finalize() to get the final transcript
-                # (Whisper is a batch model, each chunk is effectively final)
-                result = await asyncio.to_thread(self.faster_whisper_backend.finalize)
-            
-            if result and result.get("text"):
-                transcript = result["text"].strip()
-                is_final = result.get("type") == "final"
-                logging.info("📝 STT RESULT - Faster-Whisper transcript: '%s' (final=%s)", transcript, is_final)
-                updates.append({
-                    "type": "stt_result",
-                    "is_final": is_final,
-                    "text": transcript,
-                    "transcript": transcript,
-                })
-            
-            # Clear buffer after processing
-            session.fw_audio_buffer = b""
-            
-        except Exception as exc:
-            logging.error("Faster-Whisper STT stream processing failed: %s", exc, exc_info=True)
-            session.fw_audio_buffer = b""
-
-        return updates
+        """Telephony-friendly utterance segmentation + one-shot Faster-Whisper decode."""
+        return await self._process_stt_stream_whisper_segmented(
+            session,
+            audio_data,
+            input_rate,
+            backend_name="faster_whisper",
+        )
 
     async def _process_stt_stream_whisper_cpp(
         self,
@@ -2914,18 +2968,45 @@ class LocalAIServer:
         audio_data: bytes,
         input_rate: int,
     ) -> List[Dict[str, Any]]:
-        """Feed audio into Whisper.cpp and return transcript updates."""
-        if not self.whisper_cpp_backend:
-            logging.error("Whisper.cpp STT backend not initialized")
+        """Telephony-friendly utterance segmentation + one-shot Whisper.cpp decode."""
+        return await self._process_stt_stream_whisper_segmented(
+            session,
+            audio_data,
+            input_rate,
+            backend_name="whisper_cpp",
+        )
+
+    async def _process_stt_stream_whisper_segmented(
+        self,
+        session: SessionContext,
+        audio_data: bytes,
+        input_rate: int,
+        *,
+        backend_name: str,
+    ) -> List[Dict[str, Any]]:
+        """
+        Segment telephony audio into utterances and run a one-shot transcription.
+
+        Whisper-family backends are batch models; emitting a "final" every 1s causes chopped
+        transcripts and incoherent turn-taking. We instead do simple energy-based segmentation
+        with preroll and silence endpointer, then decode the entire utterance in one shot.
+        """
+        if backend_name == "faster_whisper":
+            backend = self.faster_whisper_backend
+            lock = self._faster_whisper_lock
+        elif backend_name == "whisper_cpp":
+            backend = self.whisper_cpp_backend
+            lock = self._whisper_cpp_lock
+        else:  # pragma: no cover - defensive guard
+            logging.error("Unknown Whisper backend: %s", backend_name)
             return []
 
-        # Buffer audio for Whisper.cpp (needs sufficient audio for transcription)
-        if not hasattr(session, 'wcpp_audio_buffer'):
-            session.wcpp_audio_buffer = b""
-        
-        # Resample to 16kHz if needed
+        if not backend:
+            logging.error("%s STT backend not initialized call_id=%s", backend_name, session.call_id)
+            return []
+
         if input_rate != PCM16_TARGET_RATE:
-            audio_bytes = await asyncio.to_thread(
+            pcm16 = await asyncio.to_thread(
                 self.audio_processor.resample_audio,
                 audio_data,
                 input_rate,
@@ -2934,49 +3015,107 @@ class LocalAIServer:
                 "raw",
             )
         else:
-            audio_bytes = audio_data
+            pcm16 = audio_data
 
-        session.wcpp_audio_buffer += audio_bytes
-        
-        # Only process when we have enough audio (e.g., 1 second = 32000 bytes at 16kHz mono 16-bit)
-        MIN_BUFFER_SIZE = 32000  # 1 second of audio
-        if len(session.wcpp_audio_buffer) < MIN_BUFFER_SIZE:
+        if not pcm16:
             return []
 
-        updates: List[Dict[str, Any]] = []
-        
-        try:
-            # Reset backend's internal buffer since we manage our own buffer
-            await asyncio.to_thread(self.whisper_cpp_backend.reset)
-            
-            # Process buffered audio with Whisper.cpp
-            await asyncio.to_thread(
-                self.whisper_cpp_backend.process_audio,
-                session.wcpp_audio_buffer
-            )
-            
-            # Call finalize() to get the final transcript
-            result = await asyncio.to_thread(self.whisper_cpp_backend.finalize)
-            
-            if result and result.get("text"):
-                transcript = result["text"].strip()
-                is_final = result.get("type") == "final"
-                logging.info("📝 STT RESULT - Whisper.cpp transcript: '%s' (final=%s)", transcript, is_final)
-                updates.append({
-                    "type": "stt_result",
-                    "is_final": is_final,
-                    "text": transcript,
-                    "transcript": transcript,
-                })
-            
-            # Clear buffer after processing
-            session.wcpp_audio_buffer = b""
-            
-        except Exception as exc:
-            logging.error("Whisper.cpp STT stream processing failed: %s", exc, exc_info=True)
-            session.wcpp_audio_buffer = b""
+        # Keep a small preroll buffer so we don't clip initial phonemes.
+        preroll_max = int(PCM16_TARGET_RATE * 2 * (max(self.config.stt_segment_preroll_ms, 0) / 1000.0))
+        if preroll_max > 0:
+            session.stt_segment_preroll = (session.stt_segment_preroll + pcm16)[-preroll_max:]
+        else:
+            session.stt_segment_preroll = b""
 
-        return updates
+        try:
+            rms = int(audioop.rms(pcm16, 2))
+        except Exception:
+            rms = 0
+
+        now = monotonic()
+        is_voice = rms >= int(self.config.stt_segment_energy_threshold)
+
+        if is_voice:
+            session.stt_segment_last_voice_mono = now
+            if not session.stt_segment_in_speech:
+                session.stt_segment_in_speech = True
+                session.stt_segment_buffer = session.stt_segment_preroll + pcm16
+            else:
+                session.stt_segment_buffer += pcm16
+        elif session.stt_segment_in_speech:
+            # Keep buffering a bit of trailing silence while in-speech.
+            session.stt_segment_buffer += pcm16
+
+        if not session.stt_segment_in_speech:
+            return []
+
+        buf_len = len(session.stt_segment_buffer)
+        buf_ms = (float(buf_len) / float(PCM16_TARGET_RATE * 2)) * 1000.0
+        max_ms = float(max(250, int(self.config.stt_segment_max_ms)))
+        min_ms = float(max(0, int(self.config.stt_segment_min_ms)))
+        silence_ms = float(max(0, int(self.config.stt_segment_silence_ms)))
+        last_voice = float(session.stt_segment_last_voice_mono or 0.0)
+        since_voice_ms = (now - last_voice) * 1000.0 if last_voice > 0.0 else 0.0
+
+        end_due_to_silence = buf_ms >= min_ms and since_voice_ms >= silence_ms
+        end_due_to_max = buf_ms >= max_ms
+        if not (end_due_to_silence or end_due_to_max):
+            return []
+
+        # Finalize this utterance and reset segmenter state before decoding.
+        segment_pcm16 = session.stt_segment_buffer
+        session.stt_segment_preroll = b""
+        session.stt_segment_buffer = b""
+        session.stt_segment_last_voice_mono = 0.0
+        session.stt_segment_in_speech = False
+
+        if buf_ms < min_ms:
+            return []
+
+        request_mode = ((session.last_request_meta or {}).get("mode") or "").strip().lower()
+        started_ms = int(time() * 1000)
+        try:
+            async with lock:
+                text = await asyncio.to_thread(getattr(backend, "transcribe_pcm16"), segment_pcm16)
+        except Exception:
+            logging.error(
+                "Whisper segmented transcription failed backend=%s call_id=%s",
+                backend_name,
+                session.call_id,
+                exc_info=True,
+            )
+            text = ""
+        took_ms = int(time() * 1000) - started_ms
+
+        transcript = (text or "").strip()
+        try:
+            has_alnum = any(ch.isalnum() for ch in transcript) if transcript else False
+        except Exception:
+            has_alnum = True
+        if transcript and not has_alnum:
+            transcript = ""
+
+        logging.info(
+            "📝 STT RESULT - %s segmented utterance call_id=%s mode=%s ms=%.0f took=%dms text=%r",
+            backend_name,
+            session.call_id,
+            request_mode or "unknown",
+            buf_ms,
+            took_ms,
+            transcript[:120],
+        )
+
+        if request_mode != "stt" and not transcript:
+            return []
+
+        return [
+            {
+                "type": "stt_result",
+                "is_final": True,
+                "text": transcript,
+                "transcript": transcript,
+            }
+        ]
 
     async def _process_stt_stream_kroko(
         self,
@@ -3802,6 +3941,28 @@ class LocalAIServer:
         repair_attempts = 0
         structured_attempts = 0
 
+        # Fast path: hangup_call is extremely common and should never wait on an additional
+        # structured tool-decision LLM pass. If the user clearly expressed end-of-call intent,
+        # immediately emit hangup_call (with a clean farewell) and skip structured/repair work.
+        try:
+            allowed_set = {str(name).strip() for name in (allowed_tools or []) if str(name).strip()}
+        except Exception:
+            allowed_set = set()
+        should_apply_hangup_heuristic = (
+            tool_choice != "none"
+            and not tool_calls
+            and "hangup_call" in allowed_set
+            and self._text_has_end_call_intent(latest_user_text)
+        )
+        if should_apply_hangup_heuristic:
+            tool_calls = [
+                {
+                    "name": "hangup_call",
+                    "parameters": {"farewell_message": self._select_farewell_message(clean_text)},
+                }
+            ]
+            tool_path = "heuristic"
+
         should_try_structured = (
             bool(getattr(self, "tool_gateway_enabled", True))
             and policy in {"strict", "compatible"}
@@ -3837,21 +3998,6 @@ class LocalAIServer:
             if repaired_calls:
                 tool_calls = repaired_calls
                 tool_path = "repair"
-
-        should_apply_hangup_heuristic = (
-            tool_choice != "none"
-            and not tool_calls
-            and "hangup_call" in {str(name).strip() for name in allowed_tools}
-            and self._text_has_end_call_intent(latest_user_text)
-        )
-        if should_apply_hangup_heuristic:
-            tool_calls = [
-                {
-                    "name": "hangup_call",
-                    "parameters": {"farewell_message": self._select_farewell_message(clean_text)},
-                }
-            ]
-            tool_path = "heuristic"
 
         if tool_choice == "none":
             tool_calls = []
@@ -4135,17 +4281,19 @@ class LocalAIServer:
                 )
                 return
 
-        prompt_text, prompt_tokens, truncated, raw_tokens = self._prepare_llm_prompt(
+        prompt_text, prompt_tokens, truncated, raw_tokens, chat_messages = self._prepare_llm_prompt(
             session, clean_text
         )
+        use_chat_path = bool(self.llm_chat_format)
         logging.info(
-            "🧠 LLM PROMPT - call_id=%s tokens=%s raw_tokens=%s max_ctx=%s turns=%s truncated=%s preview=%s",
+            "🧠 LLM PROMPT - call_id=%s tokens=%s raw_tokens=%s max_ctx=%s turns=%s truncated=%s chat_format=%s preview=%s",
             session.call_id,
             prompt_tokens,
             raw_tokens,
             self.llm_context,
             len(session.llm_user_turns),
             truncated,
+            self.llm_chat_format or "(legacy-phi)",
             prompt_text[:120],
         )
 
@@ -4157,9 +4305,14 @@ class LocalAIServer:
                 mode,
                 prompt_text[:80],
             )
-            llm_response = await asyncio.wait_for(
-                asyncio.shield(self.process_llm(prompt_text)), timeout=infer_timeout
-            )
+            if use_chat_path:
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm_chat(chat_messages)), timeout=infer_timeout
+                )
+            else:
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm(prompt_text)), timeout=infer_timeout
+                )
         except asyncio.TimeoutError:
             logging.warning(
                 "🧠 LLM TIMEOUT - Using fallback call_id=%s mode=%s timeout=%.1fs",
@@ -4189,24 +4342,45 @@ class LocalAIServer:
                     mode,
                     clean_text[:80],
                 )
-                retry_prompt = (
-                    f"{prompt_text}\n\n"
-                    "IMPORTANT: Do NOT output any tool calls or tool tags. "
-                    "Do NOT include <tool_call>...</tool_call> or <hangup_call>...</hangup_call>. "
-                    "Respond with plain conversational text only."
-                )
-                try:
-                    llm_retry = await asyncio.wait_for(
-                        asyncio.shield(self.process_llm(retry_prompt)), timeout=infer_timeout
+                if use_chat_path:
+                    retry_messages = list(chat_messages) + [
+                        {"role": "user", "content": (
+                            "IMPORTANT: Do NOT output any tool calls or tool tags. "
+                            "Do NOT include <tool_call>...</tool_call> or <hangup_call>...</hangup_call>. "
+                            "Respond with plain conversational text only."
+                        )}
+                    ]
+                    try:
+                        llm_retry = await asyncio.wait_for(
+                            asyncio.shield(self.process_llm_chat(retry_messages)), timeout=infer_timeout
+                        )
+                        if llm_retry and isinstance(llm_retry, str):
+                            llm_response = llm_retry
+                    except Exception:
+                        logging.debug(
+                            "LLM retry without tools failed; keeping original response call_id=%s",
+                            session.call_id,
+                            exc_info=True,
+                        )
+                else:
+                    retry_prompt = (
+                        f"{prompt_text}\n\n"
+                        "IMPORTANT: Do NOT output any tool calls or tool tags. "
+                        "Do NOT include <tool_call>...</tool_call> or <hangup_call>...</hangup_call>. "
+                        "Respond with plain conversational text only."
                     )
-                    if llm_retry and isinstance(llm_retry, str):
-                        llm_response = llm_retry
-                except Exception:
-                    logging.debug(
-                        "LLM retry without tools failed; keeping original response call_id=%s",
-                        session.call_id,
-                        exc_info=True,
-                    )
+                    try:
+                        llm_retry = await asyncio.wait_for(
+                            asyncio.shield(self.process_llm(retry_prompt)), timeout=infer_timeout
+                        )
+                        if llm_retry and isinstance(llm_retry, str):
+                            llm_response = llm_retry
+                    except Exception:
+                        logging.debug(
+                            "LLM retry without tools failed; keeping original response call_id=%s",
+                            session.call_id,
+                            exc_info=True,
+                        )
 
         # Record assistant turn for subsequent prompts (avoid tool-call markup in history).
         assistant_text = self._strip_tool_calls_for_tts(llm_response or "").strip()
@@ -4519,15 +4693,26 @@ class LocalAIServer:
         )
 
         infer_timeout = self.config.llm_infer_timeout_sec
+        use_chat_path = bool(self.llm_chat_format)
         try:
             logging.info(
                 "🧠 LLM START - Generating response call_id=%s mode=%s",
                 session.call_id,
                 mode or "llm",
             )
-            llm_response = await asyncio.wait_for(
-                asyncio.shield(self.process_llm(text)), timeout=infer_timeout
-            )
+            if use_chat_path:
+                effective_system = self._get_effective_system_prompt()
+                chat_msgs: List[Dict[str, str]] = []
+                if effective_system:
+                    chat_msgs.append({"role": "system", "content": effective_system})
+                chat_msgs.append({"role": "user", "content": text})
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm_chat(chat_msgs)), timeout=infer_timeout
+                )
+            else:
+                llm_response = await asyncio.wait_for(
+                    asyncio.shield(self.process_llm(text)), timeout=infer_timeout
+                )
         except asyncio.TimeoutError:
             logging.warning(
                 "🧠 LLM TIMEOUT - Using fallback call_id=%s mode=%s timeout=%.1fs",

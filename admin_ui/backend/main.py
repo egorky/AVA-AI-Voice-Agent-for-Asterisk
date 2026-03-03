@@ -233,7 +233,9 @@ import os
 # Mount static files if directory exists (production/docker)
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):
+    static_files = StaticFiles(directory=static_dir, html=False)
     app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
+    index_file = os.path.join(static_dir, "index.html")
     
     @app.get("/{full_path:path}")
     async def serve_react_app(full_path: str):
@@ -241,13 +243,14 @@ if os.path.exists(static_dir):
         if full_path.startswith("api/") or full_path in ("docs", "redoc", "openapi.json"):
             raise HTTPException(status_code=404, detail="Not found")
             
-        # Check if the file exists in the static root (like mascot_transparent.png or favicon.ico)
-        potential_file = os.path.join(static_dir, full_path)
-        if full_path and os.path.isfile(potential_file):
-            return FileResponse(potential_file)
+        # Use Starlette's safe static path lookup to prevent traversal.
+        if full_path:
+            resolved_path, stat_result = static_files.lookup_path(full_path.lstrip("/"))
+            if stat_result and os.path.isfile(resolved_path):
+                return FileResponse(resolved_path)
             
         # Serve index.html for all other routes (SPA)
-        response = FileResponse(os.path.join(static_dir, "index.html"))
+        response = FileResponse(index_file)
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
 
 class KokoroTTSBackend:
@@ -212,17 +213,20 @@ class MeloTTSBackend:
         except Exception:
             return
 
+        legacy_host = "myshell-public-repo-hosting.s3.amazonaws.com"
+        replacement_host = "myshell-public-repo-host.s3.amazonaws.com"
         patched = 0
         for attr in ("DOWNLOAD_CKPT_URLS", "DOWNLOAD_CONFIG_URLS", "PRETRAINED_MODELS"):
             value = getattr(download_utils, attr, None)
             if isinstance(value, dict):
                 for key, url in list(value.items()):
-                    if isinstance(url, str) and "myshell-public-repo-hosting.s3.amazonaws.com" in url:
-                        value[key] = url.replace(
-                            "myshell-public-repo-hosting.s3.amazonaws.com",
-                            "myshell-public-repo-host.s3.amazonaws.com",
-                        )
-                        patched += 1
+                    if not isinstance(url, str):
+                        continue
+                    parsed = urlsplit(url)
+                    if parsed.netloc != legacy_host:
+                        continue
+                    value[key] = urlunsplit(parsed._replace(netloc=replacement_host))
+                    patched += 1
 
         if patched:
             logging.info("🎙️ MELOTTS - Patched %d legacy download URLs", patched)

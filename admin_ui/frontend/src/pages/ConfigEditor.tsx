@@ -170,11 +170,11 @@ const ConfigEditor = () => {
     };
 
     const handleApplyChanges = async () => {
-        if (!pendingApply || applyPlan.length === 0) return;
+        if (!pendingApply) return;
         setApplying(true);
         try {
             setError(null);
-            const item = applyPlan[0];
+            const item = applyPlan[0] || {};
             const method = (item?.method || applyMethod) as string;
 
             if (method === 'hot_reload') {

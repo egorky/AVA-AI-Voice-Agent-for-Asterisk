@@ -35,3 +35,8 @@ class SessionContext:
     authenticated: bool = False
     # Whisper-only echo guard: suppress STT while Local AI Server is emitting TTS audio.
     stt_suppress_until: float = 0.0
+    # Telephony utterance segmentation state (batch STT backends like Whisper).
+    stt_segment_preroll: bytes = b""
+    stt_segment_buffer: bytes = b""
+    stt_segment_last_voice_mono: float = 0.0
+    stt_segment_in_speech: bool = False

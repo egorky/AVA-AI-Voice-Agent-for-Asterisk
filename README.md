@@ -11,7 +11,7 @@
 ![Python](https://img.shields.io/badge/python-3.11+-blue.svg)
 ![Docker](https://img.shields.io/badge/docker-compose-blue.svg)
 ![Asterisk](https://img.shields.io/badge/asterisk-18+-orange.svg)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/hkjarral/Asterisk-AI-Voice-Agent)
 [![Discord](https://dcbadge.limes.pink/api/server/ysg8fphxUe?style=plastic)](https://discord.gg/ysg8fphxUe)
 
 The most powerful, flexible open-source AI voice agent for Asterisk/FreePBX. Featuring a **modular pipeline architecture** that lets you mix and match STT, LLM, and TTS providers, plus **5 production-ready golden baselines** validated for enterprise deployment.
@@ -53,7 +53,7 @@ For a complete **first successful call** walkthrough (dialplan + transport selec
 
 ```bash
 # Clone repository
-git clone https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
 cd Asterisk-AI-Voice-Agent
 
 # Run preflight with auto-fix (creates .env, generates JWT_SECRET)
@@ -164,14 +164,14 @@ docker compose -p asterisk-ai-voice-agent logs -f ai_engine
 <details open>
 <summary><b>Latest Updates</b></summary>
 
-### �️ Local AI Server Improvements (v6.3.1)
+### 🛠️ Local AI Server Improvements (v6.3.1)
 - **Backend enable/rebuild flow**: One-click backend enable with progress tracking for optional backends (Faster-Whisper, Whisper.cpp, MeloTTS)
 - **Model lifecycle UX**: Expanded model catalog, safer archive extraction, GGUF magic-byte validation, checksum sidecars
 - **GPU ergonomics**: `LOCAL_LLM_GPU_LAYERS=-1` auto-detection, preflight warnings, GPU compose overlay improvements
 - **CPU-first onboarding**: Defaults to `runtime_mode=minimal` on CPU-only hosts
 - **Security hardening**: Path traversal protection on all model paths, concurrent rebuild race condition fix, active-call guard on model switch
 
-### �️ Guardrails (v6.3.1)
+### 🛡️ Guardrails (v6.3.1)
 - **Structured local tool gateway**: Allowlist-driven tool execution with repair/structured-decision fallbacks
 - **Hangup guardrails**: Blocks hallucinated `hangup_call` without end-of-call intent (configurable policy modes)
 - **Tool-call parsing robustness**: Hardened extraction against malformed wrappers/markdown/control-token leaks
@@ -457,7 +457,7 @@ Production-ready CLI for operations and setup.
 
 **Installation:**
 ```bash
-curl -sSL https://raw.githubusercontent.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/main/scripts/install-cli.sh | bash
+curl -sSL https://raw.githubusercontent.com/hkjarral/Asterisk-AI-Voice-Agent/main/scripts/install-cli.sh | bash
 ```
 
 **Commands:**
@@ -586,7 +586,7 @@ The `preflight.sh` script handles initial setup:
 ### 🚀 Get Started in 3 Steps
 
 ```bash
-git clone -b develop https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk.git
+git clone -b develop https://github.com/hkjarral/Asterisk-AI-Voice-Agent.git
 cd Asterisk-AI-Voice-Agent
 ./scripts/setup-contributor.sh
 ```
@@ -597,20 +597,20 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
 
 | Guide | For |
 |-------|-----|
-| **[Operator Contributor Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
+| **[Operator Contributor Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/OPERATOR_CONTRIBUTOR_GUIDE.md)** | First-time contributors (no GitHub experience needed) |
 | **[Contributing Guide](CONTRIBUTING.md)** | Full contribution guidelines and workflow |
-| **[Coding Guidelines](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
+| **[Coding Guidelines](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/CODING_GUIDELINES.md)** | Code standards for all contributions |
 | **[Roadmap](docs/ROADMAP.md)** | What to work on next (13+ beginner-friendly tasks) |
 
 ### 🔧 Build Something New
 
 | Area | Guide | Template |
 |------|-------|----------|
-| Full Agent Provider | [Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/examples/providers/template_full_agent.py) |
-| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/tree/develop/examples/pipelines/) |
-| Pre-Call Hook | [Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/examples/hooks/template_pre_call_hook.py) |
-| In-Call Hook | [Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/examples/hooks/template_in_call_hook.py) |
-| Post-Call Hook | [Guide](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/examples/hooks/template_post_call_hook.py) |
+| Full Agent Provider | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-full-agent-provider.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/providers/template_full_agent.py) |
+| Pipeline Adapter (STT/LLM/TTS) | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/adding-pipeline-adapter.md) | [Templates](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/tree/develop/examples/pipelines/) |
+| Pre-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/pre-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_pre_call_hook.py) |
+| In-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/in-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_in_call_hook.py) |
+| Post-Call Hook | [Guide](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/post-call-hooks-development.md) | [Template](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/examples/hooks/template_post_call_hook.py) |
 
 ### 👩‍💻 For Developers
 - [Developer Onboarding](docs/DEVELOPER_ONBOARDING.md) - Project overview and first tasks
@@ -633,15 +633,15 @@ Then open in [Windsurf](https://codeium.com/windsurf) and type: **"I want to con
 </tr>
 </table>
 
-See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
+See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list and [Recognition Program](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/blob/develop/docs/contributing/RECOGNITION.md) for how we recognize contributions.
 
 ---
 
 ## 💬 Community
 
 - **[Discord Server](https://discord.gg/ysg8fphxUe)** - Support and discussions
-- [GitHub Issues](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/issues) - Bug reports
-- [GitHub Discussions](https://github.com/hkjarral/AVA-AI-Voice-Agent-for-Asterisk/discussions) - General chat
+- [GitHub Issues](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/issues) - Bug reports
+- [GitHub Discussions](https://github.com/hkjarral/Asterisk-AI-Voice-Agent/discussions) - General chat
 
 ---
 
@@ -676,4 +676,4 @@ If you find this project useful, please also give it a ⭐️!
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/AVA-AI-Voice-Agent-for-Asterisk&type=date&legend=top-left)
+[![Star History Chart](https://api.star-history.com/svg?repos=hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)](https://www.star-history.com/#hkjarral/Asterisk-AI-Voice-Agent&type=date&legend=top-left)

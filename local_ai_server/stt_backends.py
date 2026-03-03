@@ -508,6 +508,36 @@ class FasterWhisperSTTBackend:
         """Reset the audio buffer."""
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
+
+    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+        """
+        Transcribe a complete utterance (PCM16 16kHz mono) in one shot.
+
+        This is intended for telephony turn-taking where we segment utterances
+        outside the model and avoid backend-internal VAD filters that can
+        mis-detect phone audio as silence.
+        """
+        if not self._initialized or self.model is None:
+            return ""
+        if not pcm16_audio:
+            return ""
+
+        try:
+            samples = np.frombuffer(pcm16_audio, dtype=np.int16)
+            float_samples = samples.astype(np.float32) / 32768.0
+            lang = (self.language or "").strip().lower()
+            language = None if not lang or lang == "auto" else self.language
+            segments, _info = self.model.transcribe(
+                float_samples,
+                language=language,
+                beam_size=1,
+                vad_filter=False,
+            )
+            text = " ".join(segment.text.strip() for segment in segments if getattr(segment, "text", None))
+            return (text or "").strip()
+        except Exception:
+            logging.error("❌ FASTER-WHISPER - transcribe_pcm16 failed", exc_info=True)
+            return ""
     
     def shutdown(self) -> None:
         """Shutdown the model."""
@@ -712,6 +742,26 @@ class WhisperCppSTTBackend:
         """Reset the audio buffer."""
         self._audio_buffer = np.array([], dtype=np.float32)
         self._last_text = ""
+
+    def transcribe_pcm16(self, pcm16_audio: bytes) -> str:
+        """Transcribe a complete utterance (PCM16 16kHz mono) in one shot."""
+        if not self._initialized or self.model is None:
+            return ""
+        if not pcm16_audio:
+            return ""
+        try:
+            samples = np.frombuffer(pcm16_audio, dtype=np.int16)
+            float_samples = samples.astype(np.float32) / 32768.0
+            segments = self.model.transcribe(float_samples)
+            text = " ".join(seg.text.strip() for seg in segments if getattr(seg, "text", None))
+            text = (text or "").strip()
+            if text and self._is_hallucination(text):
+                logging.debug("🔇 WHISPER.CPP - Filtered hallucination (oneshot): '%s'", text)
+                return ""
+            return text
+        except Exception:
+            logging.error("❌ WHISPER.CPP - transcribe_pcm16 failed", exc_info=True)
+            return ""
     
     def shutdown(self) -> None:
         """Shutdown the model."""
@@ -719,4 +769,3 @@ class WhisperCppSTTBackend:
         self._initialized = False
         self._audio_buffer = np.array([], dtype=np.float32)
         logging.info("🛑 WHISPER.CPP - Model shutdown")
-

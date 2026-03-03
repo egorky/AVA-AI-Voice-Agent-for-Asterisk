@@ -56,10 +56,13 @@ PROVIDER_MAP = {
 IVR_NUMBER = "19257366718"
 
 # AMI credentials (from FreePBX manager.conf)
-AMI_HOST = "127.0.0.1"
-AMI_PORT = 5038
-AMI_USER = "OgtKe0U6pHl1"
-AMI_PASS = "Xr3CjJD0qVRR"
+AMI_HOST = (os.environ.get("AMI_HOST", "127.0.0.1") or "127.0.0.1").strip()
+try:
+    AMI_PORT = int((os.environ.get("AMI_PORT", "5038") or "5038").strip())
+except ValueError:
+    AMI_PORT = 5038
+AMI_USER = (os.environ.get("AMI_USER", "") or "").strip()
+AMI_PASS = (os.environ.get("AMI_PASS", "") or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -302,6 +305,10 @@ async def run_test_call(provider_dtmf, timeout_secs, ari_host=None,
         "error": None,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+    if not AMI_USER or not AMI_PASS:
+        report["error"] = "AMI_USER and AMI_PASS environment variables required"
+        return report
 
     ami = AMIClient(AMI_HOST, AMI_PORT, AMI_USER, AMI_PASS)
     pjsip_channel = None

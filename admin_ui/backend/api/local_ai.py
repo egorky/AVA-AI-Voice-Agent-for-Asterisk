@@ -128,6 +128,7 @@ class ModelInfo(BaseModel):
     backend: Optional[str] = None  # vosk, sherpa, kroko, piper, kokoro
     size_mb: Optional[float] = None
     voice_files: Optional[Dict[str, str]] = None  # For Kokoro voices
+    chat_format: Optional[str] = None  # llama-cpp-python chat template (LLM only)
 
 
 class AvailableModels(BaseModel):
@@ -139,6 +140,7 @@ class AvailableModels(BaseModel):
 
 class SwitchModelRequest(BaseModel):
     """Request to switch model."""
+    model_config = {"protected_namespaces": ()}
     model_type: str  # stt, tts, llm
     backend: Optional[str] = None  # For STT/TTS: vosk, sherpa, kroko, piper, kokoro
     model_path: Optional[str] = None  # For models with paths
@@ -538,18 +540,22 @@ async def list_available_models():
                     voice_files=voice_files
                 ))
     
-    # Scan LLM models
+    # Scan LLM models — enrich with chat_format from catalog
+    from api.models_catalog import LLM_MODELS as _LLM_CATALOG
+    _catalog_by_path = {m.get("model_path", ""): m for m in _LLM_CATALOG if m.get("model_path")}
     llm_dir = os.path.join(models_dir, "llm")
     if os.path.exists(llm_dir):
         for item in os.listdir(llm_dir):
             if item.endswith(".gguf"):
                 item_path = os.path.join(llm_dir, item)
+                catalog_entry = _catalog_by_path.get(item, {})
                 llm_models.append(ModelInfo(
                     id=item.replace(".gguf", ""),
                     name=item.replace(".gguf", ""),
                     path=f"/app/models/llm/{item}",
                     type="llm",
-                    size_mb=get_file_size_mb(item_path)
+                    size_mb=get_file_size_mb(item_path),
+                    chat_format=catalog_entry.get("chat_format") or None
                 ))
     
     return AvailableModels(
@@ -747,7 +753,14 @@ async def switch_model(request: SwitchModelRequest):
                     requires_restart=False,
                 )
         except Exception:
-            pass  # Best-effort check; proceed only if the check itself crashes unexpectedly
+            return SwitchModelResponse(
+                success=False,
+                message=(
+                    "Cannot switch model: unable to verify active calls (internal error). "
+                    "Ensure ai_engine is running, or set force_incompatible_apply=true to override."
+                ),
+                requires_restart=False,
+            )
 
     request = _normalize_switch_request(request)
     env_file = os.path.join(PROJECT_ROOT, ".env")
@@ -975,6 +988,15 @@ async def switch_model(request: SwitchModelRequest):
                 llm_cfg["context"] = int(request.llm_context)
             if request.llm_max_tokens is not None:
                 llm_cfg["max_tokens"] = int(request.llm_max_tokens)
+            # Resolve chat_format from catalog so hot-reload uses the correct template.
+            if request.model_path:
+                from api.models_catalog import LLM_MODELS as _LLM_CATALOG
+                _cat_by_path = {m.get("model_path", ""): m for m in _LLM_CATALOG if m.get("model_path")}
+                model_basename = os.path.basename(request.model_path)
+                cat_entry = _cat_by_path.get(model_basename, {})
+                catalog_chat_format = (cat_entry.get("chat_format") or "").strip()
+                if catalog_chat_format:
+                    llm_cfg["chat_format"] = catalog_chat_format
             if llm_cfg:
                 payload["llm_config"] = llm_cfg
 

@@ -49,6 +49,7 @@ _LLM_CONFIG_MAP = {
     "gpu_layers": "llm_gpu_layers",
     "system_prompt": "llm_system_prompt",
     "use_mlock": "llm_use_mlock",
+    "chat_format": "llm_chat_format",
 }
 
 
@@ -133,6 +134,11 @@ def apply_switch_model_request(
         value = data["kroko_model_path"]
         new_config = replace(new_config, kroko_model_path=value)
         changed.append(f"kroko_model_path={os.path.basename(value)}")
+
+    if "whisper_cpp_model_path" in data:
+        value = data["whisper_cpp_model_path"]
+        new_config = replace(new_config, whisper_cpp_model_path=value)
+        changed.append(f"whisper_cpp_model_path={os.path.basename(value)}")
 
     if "kroko_language" in data:
         value = data["kroko_language"]

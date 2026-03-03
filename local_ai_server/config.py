@@ -65,6 +65,13 @@ class LocalAIConfig:
     )
     llm_use_mlock: bool = False
     llm_infer_timeout_sec: float = 20.0
+    llm_chat_format: str = ""
+    llm_voice_preamble: str = (
+        "You are a voice assistant on a phone call. "
+        "Keep responses short and conversational. "
+        "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
+        "Speak naturally as if talking to someone on the phone."
+    )
     tool_gateway_enabled: bool = True
 
     tts_backend: str = "piper"
@@ -83,6 +90,14 @@ class LocalAIConfig:
     kokoro_api_model: str = "model"
 
     stt_idle_ms: int = 5000
+    # Telephony-friendly utterance segmentation for batch STT backends (Whisper family).
+    # These are intentionally separate from stt_idle_ms (which is used by some streaming backends)
+    # so we can tune Whisper segmentation without affecting Vosk/Sherpa/Kroko behavior.
+    stt_segment_energy_threshold: int = 1200
+    stt_segment_preroll_ms: int = 200
+    stt_segment_min_ms: int = 250
+    stt_segment_silence_ms: int = 500
+    stt_segment_max_ms: int = 12000
 
     @classmethod
     def from_env(cls) -> "LocalAIConfig":
@@ -120,6 +135,18 @@ class LocalAIConfig:
         else:
             llm_context = 2048 if _parse_bool(os.getenv("GPU_AVAILABLE", "0"), default=False) else 768
 
+        # Backward-compatibility aliases for older UI keys.
+        whisper_cpp_model_path = (
+            os.getenv("WHISPER_CPP_MODEL_PATH")
+            or os.getenv("LOCAL_WHISPER_CPP_MODEL_PATH")
+            or "/app/models/stt/ggml-base.en.bin"
+        )
+        stt_idle_ms_raw = (
+            os.getenv("LOCAL_STT_IDLE_MS")
+            or os.getenv("LOCAL_STT_IDLE_TIMEOUT_MS")
+            or "5000"
+        )
+
         return cls(
             runtime_mode=runtime_mode,
             ws_host=os.getenv("LOCAL_WS_HOST", "127.0.0.1"),
@@ -136,9 +163,7 @@ class LocalAIConfig:
             faster_whisper_device=os.getenv("FASTER_WHISPER_DEVICE", "cpu"),
             faster_whisper_compute=os.getenv("FASTER_WHISPER_COMPUTE_TYPE", "int8"),
             faster_whisper_language=os.getenv("FASTER_WHISPER_LANGUAGE", "en"),
-            whisper_cpp_model_path=os.getenv(
-                "WHISPER_CPP_MODEL_PATH", "/app/models/stt/ggml-base.en.bin"
-            ),
+            whisper_cpp_model_path=whisper_cpp_model_path,
             whisper_cpp_language=os.getenv("WHISPER_CPP_LANGUAGE", "en"),
             kroko_url=os.getenv(
                 "KROKO_URL",
@@ -170,6 +195,14 @@ class LocalAIConfig:
             llm_stop_tokens=stop_tokens,
             llm_use_mlock=_parse_bool(os.getenv("LOCAL_LLM_USE_MLOCK", "0")),
             llm_infer_timeout_sec=float(os.getenv("LOCAL_LLM_INFER_TIMEOUT_SEC", "20.0")),
+            llm_chat_format=(os.getenv("LOCAL_LLM_CHAT_FORMAT", "") or "").strip(),
+            llm_voice_preamble=os.getenv(
+                "LOCAL_LLM_VOICE_PREAMBLE",
+                "You are a voice assistant on a phone call. "
+                "Keep responses short and conversational. "
+                "Do not use markdown, bullet points, numbered lists, or any visual formatting. "
+                "Speak naturally as if talking to someone on the phone.",
+            ),
             tool_gateway_enabled=_parse_bool(os.getenv("LOCAL_TOOL_GATEWAY_ENABLED", "1"), default=True),
             tts_backend=(os.getenv("LOCAL_TTS_BACKEND", "piper") or "piper").strip().lower(),
             tts_model_path=os.getenv(
@@ -185,5 +218,10 @@ class LocalAIConfig:
             kokoro_api_base_url=(os.getenv("KOKORO_API_BASE_URL", "") or "").strip(),
             kokoro_api_key=(os.getenv("KOKORO_API_KEY", "") or "").strip(),
             kokoro_api_model=(os.getenv("KOKORO_API_MODEL", "model") or "model").strip(),
-            stt_idle_ms=int(os.getenv("LOCAL_STT_IDLE_MS", "5000")),
+            stt_idle_ms=int(stt_idle_ms_raw),
+            stt_segment_energy_threshold=int(os.getenv("LOCAL_STT_SEGMENT_ENERGY_THRESHOLD", "1200")),
+            stt_segment_preroll_ms=int(os.getenv("LOCAL_STT_SEGMENT_PREROLL_MS", "200")),
+            stt_segment_min_ms=int(os.getenv("LOCAL_STT_SEGMENT_MIN_MS", "250")),
+            stt_segment_silence_ms=int(os.getenv("LOCAL_STT_SEGMENT_SILENCE_MS", "500")),
+            stt_segment_max_ms=int(os.getenv("LOCAL_STT_SEGMENT_MAX_MS", "12000")),
         )

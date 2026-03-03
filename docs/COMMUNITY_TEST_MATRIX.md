@@ -70,6 +70,8 @@ This auto-detects your hardware, queries the Local AI Server for model info, par
 | 2025-07-14 | @maintainer | Vast.ai A100 40GB | A100 | faster_whisper | base | kokoro | af_heart | phi-3-mini Q4_K_M | 2048 | em | ~1.5s | 4 | Whisper + Kokoro combo |
 | 2026-02-22 | @hkjarral | AMD EPYC 7443P, 66GB RAM | RTX 4090 24GB | faster_whisper | base | kokoro | af_heart | phi-3-mini-4k-instruct.Q4_K_M.gguf | 4096 | em | ~665ms | 4 | Phi-3 tool calls can be malformed/truncated; use `LOCAL_TOOL_CALL_POLICY=auto` and keep `LOCAL_TOOL_GATEWAY_ENABLED=true` for structured full-local tool normalization |
 | 2026-02-23 | @hkjarral | AMD EPYC 7443P, 66GB RAM | RTX 4090 24GB | faster_whisper | base | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 4096 | em | ~1.0s | 5 | Call `1771817082.317`: structured gateway + repair cleanly executed `hangup_call` on polite close (`Thank you.`), no tool-chatter leaked to spoken output, and post-call webhook executed successfully |
+| 2026-02-27 | @hkjarral | AMD EPYC 7713, 98GB RAM | RTX 4090 24GB | kroko | embedded (en-US) | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | em | ~1.2s | 5 | Call `1772234505.97`: end-to-end local + GPU offload; barge-in and `hangup_call` succeeded (tool gateway `tool_path=heuristic`) |
+| 2026-02-27 | @hkjarral | AMD EPYC 7713, 98GB RAM | RTX 4090 24GB | whisper_cpp | unknown | kokoro | af_heart | Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf | 2048 | em | ~1.1s | 2 | Call `1772235703.109`: low coherence (telephony STT felt “not hearing”); transcripts arrived as short fragments; call ended without `hangup_call` |
 
 ---
 
@@ -169,6 +171,46 @@ This auto-detects your hardware, queries the Local AI Server for model info, par
 **Tool Calls**:
   ✅ hangup_call: 2 executed [local_llm]
   ✅ demo_post_call_webhook: 2 executed [post_call]
+```
+
+```
+**Date**: 2026-02-27
+**Hardware**: AMD EPYC 7713 64-Core Processor, 98GB RAM
+**GPU**: NVIDIA GeForce RTX 4090 24GB
+**OS**: Ubuntu 22.04.5 LTS
+**Docker**: 29.2.1 (Compose v5.1.0)
+**STT**: kroko / Kroko (embedded, en-US)
+**TTS**: kokoro / Kokoro (af_heart, mode=local)
+**LLM**: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf / n_ctx=2048
+**LLM GPU Layers**: 50 (runtime-selected)
+**Transport**: ExternalMedia RTP
+**Pipeline**: local
+**Runtime Mode**: full
+**E2E Latency**: ~1.2s (avg_turn_latency_ms=1172, max_turn_latency_ms=1846)
+**Quality (1-5)**: 5
+**Notes**: Call `1772234505.97` was clean end-to-end; `hangup_call` executed successfully via tool gateway fast-path heuristic.
+**Tool Calls**:
+  ✅ hangup_call: 1 executed [tool_path=heuristic]
+```
+
+```
+**Date**: 2026-02-27
+**Hardware**: AMD EPYC 7713 64-Core Processor, 98GB RAM
+**GPU**: NVIDIA GeForce RTX 4090 24GB
+**OS**: Ubuntu 22.04.5 LTS
+**Docker**: 29.2.1
+**STT**: whisper_cpp / Whisper.cpp
+**TTS**: kokoro / Kokoro (af_heart, mode=local)
+**LLM**: Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf / n_ctx=2048
+**LLM GPU Layers**: -1
+**Transport**: ExternalMedia RTP
+**Pipeline**: local
+**Runtime Mode**: full
+**E2E Latency**: ~1.1s (avg_turn_latency_ms=1077, max_turn_latency_ms=1888)
+**Quality (1-5)**: 2
+**Notes**: Call `1772235703.109`: low coherence; Whisper.cpp emitted short transcript fragments (e.g., split utterances) and did not feel as robust as Faster-Whisper in this telephony setup.
+**Tool Calls**:
+  ✅ demo_post_call_webhook: 1 executed [post_call]
 ```
 
 #### Comparative Summary (2026-02-23 RTX 4090)
