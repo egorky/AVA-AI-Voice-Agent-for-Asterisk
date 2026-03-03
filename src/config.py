@@ -230,6 +230,8 @@ class TelnyxLLMProviderConfig(BaseModel):
 
 
 class GoogleProviderConfig(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     api_key: Optional[str] = None
     project_id: Optional[str] = None
     stt_base_url: str = Field(default="https://speech.googleapis.com/v1")

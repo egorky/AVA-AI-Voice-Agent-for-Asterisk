@@ -974,6 +974,18 @@ class PipelineOrchestrator:
         providers = getattr(self.config, "providers", {}) or {}
         raw_config = providers.get("google")
         if not raw_config:
+            # Also accept modular google_llm / google_stt / google_tts providers
+            for name, cfg in providers.items():
+                if not isinstance(cfg, dict):
+                    continue
+                if str(cfg.get("type", "")).lower() == "google":
+                    raw_config = cfg
+                    logger.debug(
+                        "Google pipeline config hydrated from modular provider",
+                        provider_name=name,
+                    )
+                    break
+        if not raw_config:
             return None
         if isinstance(raw_config, GoogleProviderConfig):
             config = raw_config
