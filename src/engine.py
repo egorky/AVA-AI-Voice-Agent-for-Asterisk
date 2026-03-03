@@ -9487,6 +9487,8 @@ class Engine:
                     await buffer_queue.put(item)
                     return
 
+            _llm_active = False  # Gates STT processing while LLM is generating
+
             async def ingest_audio() -> None:
                 try:
                     while True:
@@ -9501,6 +9503,10 @@ class Engine:
             if not use_streaming:
 
                 async def process_audio(audio_chunk: bytes) -> None:
+                    # Skip STT entirely while the LLM is generating — no barge-in
+                    # and no wasted STT API calls for silence/hold audio.
+                    if _llm_active:
+                        return
                     transcript = ""
                     try:
                         transcript = await pipeline.stt_adapter.transcribe(
@@ -9641,7 +9647,7 @@ class Engine:
                     flush_task = None
 
                 async def run_turn(transcript_text: str) -> None:
-                    nonlocal conversation_history
+                    nonlocal conversation_history, _llm_active
                     response_text = ""
                     tool_calls = []
                     turn_start_time = time.time()  # Track turn latency for call history
@@ -9650,6 +9656,16 @@ class Engine:
                     provider_label = getattr(session, 'provider_name', None) or 'unknown'
                     t_start = self._last_transcript_ts.get(call_id)
                     
+                    # Gate STT: clear stale buffered audio and block new STT calls
+                    # while we are waiting for the LLM. This avoids spurious Azure STT
+                    # requests for silence or carry-over speech during the LLM phase.
+                    _llm_active = True
+                    try:
+                        await pipeline.stt_adapter.close_call(call_id)
+                        await pipeline.stt_adapter.open_call(call_id, stt_options)
+                    except Exception:
+                        pass  # Non-fatal: buffer clear is best-effort
+
                     # Build context with conversation history
                     # System prompt only in first turn (when history is empty)
                     context_for_llm = {"prior_messages": list(conversation_history)}
@@ -9664,6 +9680,9 @@ class Engine:
                     except Exception:
                         logger.debug("LLM generate failed", call_id=call_id, exc_info=True)
                         return
+                    finally:
+                        # Always re-enable STT regardless of LLM success/failure
+                        _llm_active = False
 
                     # Handle structured LLM response with tool calls
                     if isinstance(llm_result, LLMResponse):
