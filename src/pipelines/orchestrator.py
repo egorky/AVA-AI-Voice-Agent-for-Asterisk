@@ -974,15 +974,27 @@ class PipelineOrchestrator:
         providers = getattr(self.config, "providers", {}) or {}
         raw_config = providers.get("google")
         if not raw_config:
-            # Also accept modular google_llm / google_stt / google_tts providers
+            # Fallback 1: match any provider with type='google'
+            # Fallback 2: match by name starting with 'google_' (e.g. google_llm saved via Admin UI with type='modular')
+            # Skip full-agent providers (google_live, type='full') - they have their own config path
             for name, cfg in providers.items():
                 if not isinstance(cfg, dict):
                     continue
-                if str(cfg.get("type", "")).lower() == "google":
+                name_lower = str(name).lower()
+                type_lower = str(cfg.get("type", "")).lower()
+                # Skip monolithic full-agent providers
+                if type_lower == "full" or name_lower in ("google_live",):
+                    continue
+                # Also skip providers with all three capabilities (full agents)
+                cfg_caps = cfg.get("capabilities", [])
+                if isinstance(cfg_caps, list) and "stt" in cfg_caps and "llm" in cfg_caps and "tts" in cfg_caps:
+                    continue
+                if type_lower == "google" or name_lower.startswith("google_") or name_lower == "google":
                     raw_config = cfg
                     logger.debug(
                         "Google pipeline config hydrated from modular provider",
                         provider_name=name,
+                        provider_type=type_lower,
                     )
                     break
         if not raw_config:
