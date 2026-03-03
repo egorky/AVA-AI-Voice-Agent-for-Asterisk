@@ -3481,6 +3481,12 @@ class Engine:
             "lead_id": getattr(session, 'outbound_lead_id', None) or "",
         }
         
+        # Merge custom_vars (these are passed from CSV or API call in outbound)
+        custom_vars = getattr(session, 'outbound_custom_vars', None) or {}
+        for k, v in custom_vars.items():
+            if str(k) not in substitutions:
+                substitutions[str(k)] = str(v) if v is not None else ""
+        
         # Add pre-call tool results (Milestone 24 - CRM enrichment variables)
         pre_call_results = getattr(session, 'pre_call_results', None) or {}
         for key, value in pre_call_results.items():

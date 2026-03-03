@@ -18,6 +18,7 @@ import OllamaProviderForm from '../components/config/providers/OllamaProviderFor
 import OpenAIRealtimeProviderForm from '../components/config/providers/OpenAIRealtimeProviderForm';
 import DeepgramProviderForm from '../components/config/providers/DeepgramProviderForm';
 import GoogleLiveProviderForm from '../components/config/providers/GoogleLiveProviderForm';
+import GoogleProviderForm from '../components/config/providers/GoogleProviderForm';
 import OpenAIProviderForm from '../components/config/providers/OpenAIProviderForm';
 import ElevenLabsProviderForm from '../components/config/providers/ElevenLabsProviderForm';
 import TelnyxProviderForm from '../components/config/providers/TelnyxProviderForm';
@@ -135,6 +136,7 @@ const ProvidersPage: React.FC = () => {
                 const lowerName = name.toLowerCase();
                 if (lowerName.includes('openai')) providerData.type = 'openai';
                 else if (lowerName.includes('deepgram')) providerData.type = 'deepgram';
+                else if (lowerName.includes('google_llm') || lowerName.includes('gemini_llm')) providerData.type = 'google';
                 else if (lowerName.includes('google') || lowerName.includes('gemini')) providerData.type = 'google_live';
                 else if (lowerName.includes('elevenlabs')) providerData.type = 'elevenlabs_agent';
                 else if (lowerName.includes('ollama')) providerData.type = 'ollama';
@@ -224,6 +226,15 @@ const ProvidersPage: React.FC = () => {
                 target_sample_rate_hz: 8000,
                 greeting: 'Hello, how can I help you today?',
                 instructions: 'You are a helpful AI assistant.'
+            },
+            google_llm: {
+                enabled: false,
+                type: 'google',
+                capabilities: ['llm'],
+                api_key: '${GOOGLE_API_KEY}',
+                llm_model: 'models/gemini-1.5-pro-latest',
+                llm_temperature: 0.7,
+                llm_max_output_tokens: 8192
             },
             elevenlabs_agent: {
                 enabled: false,
@@ -586,6 +597,9 @@ const ProvidersPage: React.FC = () => {
         if (providerName === 'deepgram' || providerName.includes('deepgram')) {
             return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
         }
+        if (providerName === 'google_llm' || providerName.includes('gemini_llm')) {
+            return <GoogleProviderForm config={providerForm} onChange={updateForm} />;
+        }
         if (providerName === 'google_live' || providerName.includes('google') || providerName.includes('gemini')) {
             return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} />;
         }
@@ -608,6 +622,8 @@ const ProvidersPage: React.FC = () => {
                 return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
             case 'deepgram':
                 return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
+            case 'google':
+                return <GoogleProviderForm config={providerForm} onChange={updateForm} />;
             case 'google_live':
                 return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} />;
             case 'openai':
