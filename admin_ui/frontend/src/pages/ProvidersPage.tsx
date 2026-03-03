@@ -597,7 +597,7 @@ const ProvidersPage: React.FC = () => {
         if (providerName === 'deepgram' || providerName.includes('deepgram')) {
             return <DeepgramProviderForm config={providerForm} onChange={updateForm} />;
         }
-        if (providerName === 'google_llm' || providerName.includes('gemini_llm')) {
+        if (providerName === 'google_llm' || providerName.includes('gemini_llm') || providerForm.type === 'google') {
             return <GoogleProviderForm config={providerForm} onChange={updateForm} />;
         }
         if (providerName === 'google_live' || providerName.includes('google') || providerName.includes('gemini')) {

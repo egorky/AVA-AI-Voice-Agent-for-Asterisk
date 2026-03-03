@@ -1441,6 +1441,40 @@ async def test_provider_connection(request: ProviderTestRequest):
                 logger.debug("Azure Speech provider validation failed", error=str(e), exc_info=True)
                 return {"success": False, "message": f"Cannot connect to Azure Speech Service at region '{region}' (see server logs)"}
 
+        # ============================================================
+        # GOOGLE GEMINI (Modular LLM / STT / TTS)
+        # ============================================================
+        is_google = (
+            provider_type == 'google'
+            or 'google' in provider_name
+            or 'gemini' in provider_name
+            or 'gemini' in provider_config.get('llm_model', '').lower()
+        )
+        if is_google:
+            api_key = provider_config.get('api_key') or get_env_key('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY') or ''
+            if api_key and '${' in api_key:
+                api_key = get_env_key('GOOGLE_API_KEY') or os.getenv('GOOGLE_API_KEY') or ''
+            if not api_key:
+                return {"success": False, "message": "GOOGLE_API_KEY not set in .env file"}
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(
+                        f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}",
+                        timeout=10.0,
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        models = data.get('models', [])
+                        return {"success": True, "message": f"Connected to Google Gemini API. {len(models)} models available."}
+                    if response.status_code == 400:
+                        return {"success": False, "message": "Invalid GOOGLE_API_KEY (400 Bad Request)"}
+                    if response.status_code == 403:
+                        return {"success": False, "message": "Invalid or unauthorized GOOGLE_API_KEY (403 Forbidden)"}
+                    return {"success": False, "message": f"Google API error: HTTP {response.status_code}"}
+            except Exception as e:
+                logger.debug("Google Gemini provider validation failed", error=str(e), exc_info=True)
+                return {"success": False, "message": "Cannot connect to Google Gemini API (see server logs)"}
+
         return {"success": False, "message": "Unknown provider type - cannot test"}
         
     except httpx.TimeoutException:
