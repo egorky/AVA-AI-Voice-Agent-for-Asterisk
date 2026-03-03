@@ -3507,7 +3507,16 @@ class Engine:
         
         try:
             # Match both {word} and {word.subword} patterns
-            return re.sub(r'\{([\w.]+)\}', replace_match, text)
+            resolved = re.sub(r'\{([\w.]+)\}', replace_match, text)
+            # Log the fully resolved prompt/greeting at DEBUG so operators can verify
+            # lead variable injection. Enable with LOG_LEVEL=DEBUG (or STREAMING_LOG_LEVEL=DEBUG).
+            logger.debug(
+                "Prompt template resolved",
+                call_id=getattr(session, 'call_id', 'unknown'),
+                available_vars=list(substitutions.keys()),
+                resolved_text=resolved,
+            )
+            return resolved
         except Exception as e:
             logger.debug(
                 "Prompt template substitution failed, leaving unchanged",
