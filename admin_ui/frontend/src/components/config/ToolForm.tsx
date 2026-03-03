@@ -1721,61 +1721,30 @@ const ToolForm = ({ config, contexts, hangupUsage, onChange, onSaveNow }: ToolFo
                     />
                     {config.google_calendar?.enabled && (
                         <div className="mt-4 pl-4 border-l-2 border-border ml-2 space-y-4">
+                            <p className="text-sm text-muted-foreground">
+                                Values set here override GOOGLE_CALENDAR_* environment variables.
+                            </p>
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <FormInput
-                                    label="Service Account Credentials Path"
+                                    label="Google Calendar credentials"
                                     value={config.google_calendar?.credentials_path || ''}
                                     onChange={(e) => updateNestedConfig('google_calendar', 'credentials_path', e.target.value)}
-                                    placeholder="/app/secrets/google-calendar-credentials.json"
-                                    tooltip="Absolute path to the Google service account JSON key file inside the container. Falls back to GOOGLE_CALENDAR_CREDENTIALS env var if empty."
+                                    placeholder="e.g. /app/secrets/google-calendar-credentials.json"
+                                    tooltip="Path to the Google service account JSON key file. Overrides GOOGLE_CALENDAR_CREDENTIALS env var when set."
                                 />
                                 <FormInput
-                                    label="Calendar ID"
+                                    label="Google Calendar ID"
                                     value={config.google_calendar?.calendar_id || ''}
                                     onChange={(e) => updateNestedConfig('google_calendar', 'calendar_id', e.target.value)}
                                     placeholder="primary"
-                                    tooltip="Google Calendar ID to use (e.g., 'primary' or a specific calendar email). Falls back to GOOGLE_CALENDAR_ID env var if empty."
+                                    tooltip="Calendar to use (e.g. 'primary' or calendar email). Overrides GOOGLE_CALENDAR_ID env var when set."
                                 />
                                 <FormInput
-                                    label="Timezone"
+                                    label="Google Calendar timezone"
                                     value={config.google_calendar?.timezone || ''}
                                     onChange={(e) => updateNestedConfig('google_calendar', 'timezone', e.target.value)}
                                     placeholder="America/New_York"
-                                    tooltip="IANA timezone for calendar events (e.g., 'America/New_York', 'Europe/London'). Falls back to GOOGLE_CALENDAR_TZ env var, then system timezone."
-                                />
-                            </div>
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                <FormInput
-                                    label="Free Prefix"
-                                    value={config.google_calendar?.free_prefix || ''}
-                                    onChange={(e) => updateNestedConfig('google_calendar', 'free_prefix', e.target.value)}
-                                    placeholder="Open"
-                                    tooltip="Event title prefix that marks available time blocks (e.g., 'Open'). Used by get_free_slots to identify bookable windows."
-                                />
-                                <FormInput
-                                    label="Busy Prefix"
-                                    value={config.google_calendar?.busy_prefix || ''}
-                                    onChange={(e) => updateNestedConfig('google_calendar', 'busy_prefix', e.target.value)}
-                                    placeholder="Busy"
-                                    tooltip="Event title prefix that marks booked appointments (e.g., 'Busy'). Used by get_free_slots to subtract occupied time."
-                                />
-                                <FormInput
-                                    label="Min Slot Duration (minutes)"
-                                    value={config.google_calendar?.min_slot_duration_minutes ?? ''}
-                                    onChange={(e) => {
-                                        const raw = e.target.value;
-                                        if (raw === '') {
-                                            updateNestedConfig('google_calendar', 'min_slot_duration_minutes', null);
-                                            return;
-                                        }
-                                        const n = Number(raw);
-                                        updateNestedConfig('google_calendar', 'min_slot_duration_minutes', Number.isFinite(n) ? Math.max(1, Math.floor(n)) : null);
-                                    }}
-                                    placeholder="15"
-                                    type="number"
-                                    min={1}
-                                    step={1}
-                                    tooltip="Default appointment duration in minutes for get_free_slots. Slot start times are aligned to multiples of this value (e.g., 30 → :00, :30)."
+                                    tooltip="IANA timezone for events (e.g. America/New_York). Overrides GOOGLE_CALENDAR_TZ and TZ env vars when set."
                                 />
                             </div>
                         </div>

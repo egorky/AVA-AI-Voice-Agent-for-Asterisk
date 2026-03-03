@@ -1,8 +1,13 @@
 """
 Google Calendar tool for Asterisk AI Voice Agent.
 
-Supports listing events, getting a single event, creating events, and finding
+Supports listing events, getting a single event, creating events, deleting events, and finding
 free appointment slots (with configurable duration and duration-aligned slot starts).
+
+Datetime handling is DST-aware: when a datetime string has a TZ tail (e.g. Z or +00:00),
+the tail is removed and the date/time is interpreted as local time in the calendar timezone
+(GOOGLE_CALENDAR_TZ, or TZ env, or UTC)—same as when there is no tail. List/time-range APIs
+receive RFC3339 with the correct offset for that zone.
 
 Environment: GOOGLE_CALENDAR_CREDENTIALS (path to service account JSON);
 GOOGLE_CALENDAR_TZ for timezone (fallback: TZ).
@@ -12,11 +17,12 @@ import asyncio
 import structlog
 from datetime import datetime, timedelta
 from typing import Dict, Any
+from zoneinfo import ZoneInfo
 
 from src.tools.base import Tool, ToolDefinition, ToolCategory
 from src.tools.context import ToolExecutionContext
 
-from src.tools.business.gcalendar import GCalendar
+from src.tools.business.gcalendar import GCalendar, _get_timezone
 
 logger = structlog.get_logger(__name__)
 
@@ -26,7 +32,7 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
     "properties": {
         "action": {
             "type": "string",
-            "enum": ["list_events", "get_event", "create_event", "get_free_slots"],
+            "enum": ["list_events", "get_event", "create_event", "delete_event", "get_free_slots"],
             "description": "The calendar operation to perform."
         },
         "time_min": {
@@ -51,7 +57,7 @@ _GOOGLE_CALENDAR_INPUT_SCHEMA = {
         },
         "event_id": {
             "type": "string",
-            "description": "The exact ID of the event. Required for get_event."
+            "description": "The exact ID of the event. Required for get_event and delete_event."
         },
         "summary": {
             "type": "string",
@@ -104,7 +110,7 @@ class GCalendarTool(Tool):
             name="google_calendar",
             description=(
                 "A general tool to interact with Google Calendar. Use this to list events, "
-                "get a specific event, create a new event, or find free slots."
+                "get a specific event, create a new event, delete an event, or find free slots."
             ),
             category=ToolCategory.BUSINESS,
             requires_channel=False,
@@ -117,6 +123,44 @@ class GCalendarTool(Tool):
         if iso_str.endswith('Z'):
             iso_str = iso_str[:-1] + '+00:00'
         return datetime.fromisoformat(iso_str)
+
+    def _get_calendar_tz_name(self, config: Dict[str, Any]) -> str:
+        """Resolve calendar timezone: config timezone, then GOOGLE_CALENDAR_TZ, TZ, UTC."""
+        return _get_timezone(config.get("timezone", ""))
+
+    def _normalize_datetime_to_calendar_tz(
+        self, dt_str: str, calendar_tz_name: str
+    ) -> datetime:
+        """
+        Parse datetime string as local time in the calendar timezone (DST-aware).
+
+        If dt_str has a TZ tail (Z or ±HH:MM): the tail is removed and the date/time
+        is interpreted as local time in the calendar zone (same as when there is no tail).
+        So "2025-03-15T19:00:00Z" is treated as 19:00 in the calendar zone, not as 19:00 UTC.
+
+        Uses GOOGLE_CALENDAR_TZ / TZ for the calendar zone; falls back to UTC if invalid.
+        """
+        dt_str = (dt_str or "").strip()
+        if not dt_str:
+            raise ValueError("Empty datetime string")
+        # Normalize Z for parsing, then parse
+        if dt_str.upper().endswith("Z"):
+            dt_str = dt_str[:-1] + "+00:00"
+        try:
+            parsed = datetime.fromisoformat(dt_str)
+        except ValueError as e:
+            raise ValueError(f"Invalid datetime string: {dt_str}") from e
+
+        try:
+            cal_tz = ZoneInfo(calendar_tz_name)
+        except Exception:
+            cal_tz = ZoneInfo("UTC")
+
+        # If there was a TZ tail, remove it: use only the wall-clock time (naive)
+        # and interpret that as local time in the calendar zone (same as no tail).
+        if parsed.tzinfo is not None:
+            parsed = parsed.replace(tzinfo=None)
+        return parsed.replace(tzinfo=cal_tz)
 
     def _get_config(self, context: ToolExecutionContext) -> Dict[str, Any]:
         """
@@ -133,10 +177,27 @@ class GCalendarTool(Tool):
     ) -> Dict[str, Any]:
         """
         Routes the request to the underlying GCalendar module or executes custom logic based on the action.
+
+        Args:
+            parameters: Tool parameters from the AI; must include "action" and action-specific fields
+                (e.g. event_id for get_event/delete_event, time_min/time_max for list_events).
+            context: Tool execution context with call_id and config access.
+
+        Returns:
+            Dict with "status" ("success" | "error") and "message"; may include "events", "id",
+            "link", or other action-specific keys. On error, message describes the failure.
         """
         call_id = getattr(context, "call_id", None) or ""
         logger.info("GCalendarTool execution triggered by LLM", call_id=call_id)
-        logger.debug("Raw arguments received from LLM", call_id=call_id, action=parameters.get("action"))
+        safe_parameters = {
+            "action": parameters.get("action"),
+            "event_id": parameters.get("event_id"),
+            "has_summary": bool(parameters.get("summary")),
+            "has_description": bool(parameters.get("description")),
+            "time_min": parameters.get("time_min"),
+            "time_max": parameters.get("time_max"),
+        }
+        logger.debug("Raw arguments received from LLM", call_id=call_id, parameters=safe_parameters)
 
         config = self._get_config(context)
         if config.get("enabled") is False:
@@ -153,6 +214,11 @@ class GCalendarTool(Tool):
             return out
 
         cal = self._get_cal(config)
+        calendar_tz_name = self._get_calendar_tz_name(config)
+
+        if not getattr(cal, "service", None):
+            logger.error("Google Calendar service unavailable", call_id=call_id)
+            return {"status": "error", "message": "Google Calendar is not configured or unavailable."}
 
         try:
             if action == "get_free_slots":
@@ -172,13 +238,25 @@ class GCalendarTool(Tool):
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
 
+                # DST-aware: normalize to calendar TZ (strip TZ tail, use GOOGLE_CALENDAR_TZ/TZ)
+                try:
+                    time_min_dt = self._normalize_datetime_to_calendar_tz(time_min, calendar_tz_name)
+                    time_max_dt = self._normalize_datetime_to_calendar_tz(time_max, calendar_tz_name)
+                    time_min_rfc = time_min_dt.isoformat()
+                    time_max_rfc = time_max_dt.isoformat()
+                except ValueError as e:
+                    out = {"status": "error", "message": str(e)}
+                    logger.warning("Invalid datetime for get_free_slots", call_id=call_id, error=str(e))
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+
                 logger.debug(
                     "Calculating free slots",
                     call_id=call_id,
                     free_prefix=free_prefix,
                     busy_prefix=busy_prefix,
                 )
-                events = await asyncio.to_thread(cal.list_events, time_min, time_max)
+                events = await asyncio.to_thread(cal.list_events, time_min_rfc, time_max_rfc)
 
                 free_blocks = []
                 busy_blocks = []
@@ -272,7 +350,18 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
-                events = await asyncio.to_thread(cal.list_events, time_min, time_max)
+                # DST-aware: normalize to calendar TZ (strip TZ tail, use GOOGLE_CALENDAR_TZ/TZ)
+                try:
+                    time_min_dt = self._normalize_datetime_to_calendar_tz(time_min, calendar_tz_name)
+                    time_max_dt = self._normalize_datetime_to_calendar_tz(time_max, calendar_tz_name)
+                    time_min_rfc = time_min_dt.isoformat()
+                    time_max_rfc = time_max_dt.isoformat()
+                except ValueError as e:
+                    out = {"status": "error", "message": str(e)}
+                    logger.warning("Invalid datetime for list_events", call_id=call_id, error=str(e))
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+                events = await asyncio.to_thread(cal.list_events, time_min_rfc, time_max_rfc)
                 simplified_events = [
                     {
                         "id": e.get("id"),
@@ -317,11 +406,6 @@ class GCalendarTool(Tool):
                 desc = parameters.get("description", "")
                 start_dt = parameters.get("start_datetime")
                 end_dt = parameters.get("end_datetime")
-                # Normalize UTC 'Z' suffix to +00:00 but preserve caller-provided offsets
-                if start_dt and start_dt.upper().endswith('Z'):
-                    start_dt = start_dt[:-1] + '+00:00'
-                if end_dt and end_dt.upper().endswith('Z'):
-                    end_dt = end_dt[:-1] + '+00:00'
                 if not summary or not start_dt or not end_dt:
                     error_msg = (
                         "Error: 'summary', 'start_datetime', and 'end_datetime' are required for create_event."
@@ -330,7 +414,18 @@ class GCalendarTool(Tool):
                     out = {"status": "error", "message": error_msg}
                     logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                     return out
-                event = await asyncio.to_thread(cal.create_event, summary, desc, start_dt, end_dt)
+                # DST-aware: if input has TZ tail, convert to calendar TZ and send local time (no tail)
+                try:
+                    start_dt_local = self._normalize_datetime_to_calendar_tz(start_dt, calendar_tz_name)
+                    end_dt_local = self._normalize_datetime_to_calendar_tz(end_dt, calendar_tz_name)
+                    start_dt_str = start_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
+                    end_dt_str = end_dt_local.strftime("%Y-%m-%dT%H:%M:%S")
+                except ValueError as e:
+                    out = {"status": "error", "message": str(e)}
+                    logger.warning("Invalid datetime for create_event", call_id=call_id, error=str(e))
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+                event = await asyncio.to_thread(cal.create_event, summary, desc, start_dt_str, end_dt_str)
                 if not event:
                     out = {"status": "error", "message": "Failed to create event."}
                     logger.error("Failed to create event", call_id=call_id)
@@ -342,6 +437,24 @@ class GCalendarTool(Tool):
                     "id": event.get("id"),
                     "link": event.get("htmlLink"),
                 }
+                logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                return out
+
+            if action == "delete_event":
+                event_id = parameters.get("event_id")
+                if not event_id:
+                    error_msg = "Error: 'event_id' parameter is required for delete_event."
+                    logger.warning("Missing event_id for delete_event", call_id=call_id)
+                    out = {"status": "error", "message": error_msg}
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+                success = await asyncio.to_thread(cal.delete_event, event_id)
+                if not success:
+                    out = {"status": "error", "message": "Failed to delete event (not found or calendar error)."}
+                    logger.warning("Failed to delete event", call_id=call_id, event_id=event_id)
+                    logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
+                    return out
+                out = {"status": "success", "message": "Event deleted.", "id": event_id}
                 logger.info("Tool response to AI", call_id=call_id, action=action, status=out.get("status"))
                 return out
 

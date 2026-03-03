@@ -1,6 +1,6 @@
 # Google Calendar tool
 
-The **google_calendar** tool lets the AI voice agent interact with Google Calendar: list events, get a single event, create events, and find free appointment slots (with duration and slot alignment).
+The **google_calendar** tool lets the AI voice agent interact with Google Calendar: list events, get a single event, create events, delete events, and find free appointment slots (with duration and slot alignment).
 
 ## Prerequisites / Setup
 
@@ -129,6 +129,7 @@ tools:
 | `list_events` | List events in a time range (`time_min`, `time_max`). |
 | `get_event` | Get one event by `event_id`. |
 | `create_event` | Create event with `summary`, `start_datetime`, `end_datetime` (optional `description`). |
+| `delete_event` | Delete an event by `event_id`. |
 | `get_free_slots` | Return start times where a slot of given `duration` (minutes) fits. Uses `free_prefix` / `busy_prefix` to compute available intervals; slot starts are aligned to multiples of `duration` (e.g. 15 -> :00, :15, :30, :45). |
 
 All times use ISO 8601. The tool is registered as `google_calendar` and is in the **business** tool category.
@@ -153,4 +154,4 @@ Example things a caller might say, and the kind of **google_calendar** call the 
   -> `list_events` for that morning, find the matching event, then optionally `get_event` with that event's `event_id` for full details.
 
 - **"Cancel my 3pm meeting."**
-  -> The tool does not support delete/cancel; use `list_events` to find the event and `get_event` by `event_id` if needed. Cancellation would require another integration or manual step unless extended.
+  -> `list_events` for that day to find the event, then `delete_event` with that event's `event_id` to cancel it.

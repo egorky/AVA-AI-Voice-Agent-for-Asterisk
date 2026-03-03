@@ -1,6 +1,14 @@
+"""
+Low-level Google Calendar API client for the Asterisk AI Voice Agent.
+
+Provides GCalendar class for listing, getting, creating, and deleting events
+using service account credentials. Used by the google_calendar tool (gcal_tool).
+"""
+
 import os
 import threading
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import structlog
 from google.oauth2 import service_account
@@ -68,7 +76,7 @@ class GCalendar:
                 exc_info=True,
             )
 
-    def list_events(self, time_min, time_max):
+    def list_events(self, time_min: str, time_max: str) -> List[Dict[str, Any]]:
         """
         Retrieves all events within a specific time range.
         time_min and time_max must be ISO 8601 formatted strings.
@@ -108,7 +116,7 @@ class GCalendar:
             )
             return []
 
-    def get_event(self, event_id):
+    def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
         """
         Returns all details of a specific event by its ID.
         """
@@ -137,7 +145,43 @@ class GCalendar:
             )
             return None
 
-    def create_event(self, summary, description, start_datetime, end_datetime):
+    def delete_event(self, event_id: str) -> bool:
+        """
+        Deletes a calendar event by its ID.
+        Returns True on success, False on failure.
+        """
+        logger.debug("delete_event called", event_id=event_id)
+        if not self.service:
+            logger.error("Calendar service is not initialized. Cannot delete event.")
+            return False
+
+        try:
+            logger.debug("Sending request to Google Calendar API (events().delete)")
+            req = self.service.events().delete(
+                calendarId=self.calendar_id,
+                eventId=event_id,
+            )
+            with self._lock:
+                req.execute()
+
+            logger.info("Event successfully deleted from Google Calendar", event_id=event_id)
+            return True
+        except Exception as e:
+            logger.error(
+                "Error deleting event via Google API",
+                event_id=event_id,
+                error=str(e),
+                exc_info=True,
+            )
+            return False
+
+    def create_event(
+        self,
+        summary: str,
+        description: str,
+        start_datetime: str,
+        end_datetime: str,
+    ) -> Optional[Dict[str, Any]]:
         """
         Creates a new calendar event.
         start_datetime and end_datetime must be ISO 8601 formatted strings.
@@ -166,7 +210,14 @@ class GCalendar:
             },
         }
 
-        logger.debug("Prepared event payload for Google API", start=start_datetime, end=end_datetime)
+        logger.debug(
+            "Prepared event payload for Google API",
+            summary_present=bool(summary),
+            description_len=len(description or ""),
+            start_datetime=start_datetime,
+            end_datetime=end_datetime,
+            timezone=timezone,
+        )
 
         try:
             logger.debug("Sending request to Google Calendar API (events().insert)")

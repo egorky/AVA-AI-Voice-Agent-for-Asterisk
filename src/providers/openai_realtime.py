@@ -2156,6 +2156,10 @@ class OpenAIRealtimeProvider(AIProviderInterface):
 
         # If a hangup was requested and we just finished emitting the farewell audio, trigger hangup now.
         if self._farewell_waiting_for_audio_done and self._farewell_response_id is not None:
+            # CRITICAL: Cancel the farewell timeout BEFORE emitting HangupReady to prevent
+            # race condition where both farewell_completed and farewell_timeout fire.
+            self._cancel_farewell_timeout()
+            
             self._farewell_waiting_for_audio_done = False
             self._farewell_response_id = None
             try:
