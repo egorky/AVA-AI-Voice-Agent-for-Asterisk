@@ -338,6 +338,7 @@ class GoogleLLMAdapter(LLMComponent):
         merged = self._compose_options(options)
         headers, params = await self._credential_manager.build_auth(self._auth_scopes)
 
+        # Build payload before logging so we log exactly what is sent
         payload = self._build_payload(transcript, context, merged)
         payload = _merge_dicts(payload, merged.get("request_overrides"))
 
@@ -347,26 +348,16 @@ class GoogleLLMAdapter(LLMComponent):
             model_path = f"models/{model_path}"
         url = f"{self._provider_defaults.llm_base_url.rstrip('/')}/{model_path}:generateContent"
 
-        # Log the full outgoing LLM request at DEBUG level so operators can inspect
-        # the system prompt, conversation history, and user transcript.
+        # Log identically to OpenAI: full system instruction + full contents array
         logger.debug(
             "Google LLM generateContent request",
             call_id=call_id,
             request_id=request_id,
             model=model_path,
             url=url,
-            system_instruction_preview=(
-                (merged.get("system_instruction") or "")[:120] or "(none)"
-            ),
-            transcript_preview=transcript[:120] if transcript else "(none)",
-            generation_config={
-                k: v for k, v in {
-                    "temperature": merged.get("temperature"),
-                    "top_p": merged.get("top_p"),
-                    "max_output_tokens": merged.get("max_output_tokens"),
-                }.items() if v is not None
-            },
-            history_turns=len(context.get("messages", context.get("history", []))),
+            system_instruction=merged.get("system_instruction") or "(none)",
+            contents=json.dumps(payload.get("contents", []), ensure_ascii=False),
+            generation_config=payload.get("generationConfig"),
         )
 
         async with self._session.post(
@@ -407,6 +398,7 @@ class GoogleLLMAdapter(LLMComponent):
         )
         return LLMResponse(text=text or "")
 
+
     async def _ensure_session(self) -> None:
         if self._session and not self._session.closed:
             return
@@ -440,9 +432,7 @@ class GoogleLLMAdapter(LLMComponent):
     def _build_payload(self, transcript: str, context: Dict[str, Any], merged: Dict[str, Any]) -> Dict[str, Any]:
         contents = context.get("google_contents")
         if not contents:
-            # Get system instruction to prepend to first message
-            system_instruction = merged.get("system_instruction") or context.get("system_prompt")
-            contents = self._coalesce_contents(transcript, context, system_instruction)
+            contents = self._coalesce_contents(transcript, context)
 
         generation_config = {
             "temperature": merged["temperature"],
@@ -459,12 +449,20 @@ class GoogleLLMAdapter(LLMComponent):
             "generationConfig": generation_config,
         }
 
+        # Use the Gemini API top-level systemInstruction field (persistent across all turns)
+        system_instruction = merged.get("system_instruction") or context.get("system_prompt")
+        if system_instruction:
+            payload["systemInstruction"] = {
+                "parts": [{"text": system_instruction}]
+            }
+
         if merged.get("safety_settings"):
             payload["safetySettings"] = merged["safety_settings"]
 
         return payload
 
-    def _coalesce_contents(self, transcript: str, context: Dict[str, Any], system_instruction: Optional[str] = None) -> list[Dict[str, Any]]:
+    def _coalesce_contents(self, transcript: str, context: Dict[str, Any]) -> list[Dict[str, Any]]:
+        """Build the Gemini `contents` array from prior_messages + current transcript."""
         contents: list[Dict[str, Any]] = []
         prior_messages = context.get("prior_messages") or []
 
@@ -476,14 +474,8 @@ class GoogleLLMAdapter(LLMComponent):
             normalized_role = "model" if role in ("assistant", "model") else "user"
             contents.append({"role": normalized_role, "parts": [{"text": text or ""}]})
 
-        # Build the user message, prepending system instruction if provided
-        user_text = transcript or ""
-        if system_instruction and not prior_messages:
-            # Only prepend system instruction to first user message in conversation
-            user_text = f"{system_instruction}\n\n{user_text}" if user_text else system_instruction
-        
-        if user_text or not contents:
-            contents.append({"role": "user", "parts": [{"text": user_text}]})
+        if transcript or not contents:
+            contents.append({"role": "user", "parts": [{"text": transcript or ""}]})
 
         return contents
 
