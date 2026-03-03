@@ -153,6 +153,9 @@ class NoOpLLMAdapter(LLMComponent, _PlaceholderBase):
     def __init__(self, options: Optional[Dict[str, Any]] = None):
         _PlaceholderBase.__init__(self, "none_llm", options)
 
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        return {"healthy": True, "error": None, "details": {"note": "No-op LLM adapter for TTS-only pipelines"}}
+
     async def generate(
         self,
         call_id: str,
@@ -161,6 +164,7 @@ class NoOpLLMAdapter(LLMComponent, _PlaceholderBase):
         options: Dict[str, Any],
     ) -> str:
         return ""
+
 
 
 class PlaceholderTTSAdapter(TTSComponent, _PlaceholderBase):

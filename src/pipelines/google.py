@@ -310,6 +310,21 @@ class GoogleLLMAdapter(LLMComponent):
             await self._session.close()
         self._session = None
 
+    async def validate_connectivity(self, options: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate Google LLM connectivity using API key presence check."""
+        api_key = self._provider_defaults.api_key or os.getenv("GOOGLE_API_KEY")
+        if not api_key and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            return {"healthy": False, "error": "GOOGLE_API_KEY or GOOGLE_APPLICATION_CREDENTIALS not set", "details": {}}
+        return {
+            "healthy": True,
+            "error": None,
+            "details": {
+                "validation_level": "basic",
+                "model": self._provider_defaults.llm_model,
+                "note": "API key present; full connectivity test not performed at startup",
+            },
+        }
+
     async def generate(
         self,
         call_id: str,
@@ -331,6 +346,28 @@ class GoogleLLMAdapter(LLMComponent):
         if not model_path.startswith("models/"):
             model_path = f"models/{model_path}"
         url = f"{self._provider_defaults.llm_base_url.rstrip('/')}/{model_path}:generateContent"
+
+        # Log the full outgoing LLM request at DEBUG level so operators can inspect
+        # the system prompt, conversation history, and user transcript.
+        logger.debug(
+            "Google LLM generateContent request",
+            call_id=call_id,
+            request_id=request_id,
+            model=model_path,
+            url=url,
+            system_instruction_preview=(
+                (merged.get("system_instruction") or "")[:120] or "(none)"
+            ),
+            transcript_preview=transcript[:120] if transcript else "(none)",
+            generation_config={
+                k: v for k, v in {
+                    "temperature": merged.get("temperature"),
+                    "top_p": merged.get("top_p"),
+                    "max_output_tokens": merged.get("max_output_tokens"),
+                }.items() if v is not None
+            },
+            history_turns=len(context.get("messages", context.get("history", []))),
+        )
 
         async with self._session.post(
             url,

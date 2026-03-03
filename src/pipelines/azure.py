@@ -903,11 +903,22 @@ class AzureTTSAdapter(TTSComponent):
         started_at = time.perf_counter()
         use_streaming = bool(merged.get("streaming", self._provider_defaults.streaming))
 
+        # For streaming responses use sock_read (per-chunk idle timeout) rather than
+        # `total` (wall-clock for the whole response) so long TTS audio doesn't time out
+        # mid-stream. For non-streaming we keep the total timeout as before.
+        if use_streaming:
+            tts_timeout = aiohttp.ClientTimeout(
+                connect=min(timeout_sec, 10.0),  # cap connection timeout at 10 s
+                sock_read=timeout_sec,             # idle read timeout (resets each chunk)
+            )
+        else:
+            tts_timeout = aiohttp.ClientTimeout(total=timeout_sec)
+
         async with self._session.post(
             url,
             data=ssml.encode("utf-8"),
             headers=headers,
-            timeout=aiohttp.ClientTimeout(total=timeout_sec),
+            timeout=tts_timeout,
         ) as resp:
             if resp.status >= 400:
                 raw = await resp.read()
