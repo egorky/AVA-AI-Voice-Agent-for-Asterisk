@@ -236,7 +236,7 @@ class GoogleProviderConfig(BaseModel):
     project_id: Optional[str] = None
     stt_base_url: str = Field(default="https://speech.googleapis.com/v1")
     tts_base_url: str = Field(default="https://texttospeech.googleapis.com/v1")
-    llm_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1")
+    llm_base_url: str = Field(default="https://generativelanguage.googleapis.com/v1beta")
     stt_language_code: str = Field(default="en-US")
     tts_voice_name: str = Field(default="en-US-Neural2-C")
     tts_audio_encoding: str = Field(default="MULAW")
