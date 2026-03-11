@@ -907,6 +907,24 @@ class OutboundStore:
             caller_id_key = normalized_to_raw.get("caller_id")
             name_key = normalized_to_raw.get("name")
 
+            # Reserved column names — these are processed separately and must NOT be
+            # auto-promoted to custom_vars. Normalized keys (lower-snake) are compared.
+            _RESERVED_COLUMNS = {
+                "phone_number", "phone", "number",  # phone variants
+                "name",
+                "context",
+                "timezone",
+                "caller_id",
+                "custom_vars",
+            }
+
+            # Determine which normalized column keys are "extra" (non-reserved).
+            extra_column_keys: Dict[str, str] = {
+                norm: raw
+                for norm, raw in normalized_to_raw.items()
+                if norm not in _RESERVED_COLUMNS
+            }
+
             with self._lock:
                 conn = self._get_connection()
                 try:
@@ -960,6 +978,14 @@ class OutboundStore:
                                 continue
                         else:
                             custom_vars = {}
+
+                        # Auto-promote extra (non-reserved) CSV columns into custom_vars.
+                        # The JSON custom_vars column wins on key conflicts — extra columns
+                        # only fill in keys that are not already present.
+                        for norm_key, raw_col in extra_column_keys.items():
+                            if norm_key not in custom_vars:
+                                cell_value = _as_str((row or {}).get(raw_col)).strip()
+                                custom_vars[norm_key] = cell_value
 
                         # Context:
                         # - Missing/blank => campaign default_context
@@ -1020,6 +1046,20 @@ class OutboundStore:
                         caller_id_override = caller_id_override or None
                         lead_name = _as_str((row or {}).get(name_key)).strip() if name_key else ""
                         lead_name = lead_name or None
+
+                        # Seed standard lead fields as template variables so they are
+                        # accessible as {lead_name}, {phone_number}, {lead_timezone},
+                        # {lead_caller_id} in TTS templates and system prompts.
+                        # These only fill keys not already provided by JSON or extra columns.
+                        _standard_seed = {
+                            "lead_name": lead_name or "",
+                            "phone_number": phone,
+                            "lead_timezone": tz_override,
+                            "lead_caller_id": caller_id_override or "",
+                        }
+                        for _sk, _sv in _standard_seed.items():
+                            if _sk not in custom_vars:
+                                custom_vars[_sk] = _sv
 
                         lead_id = str(uuid.uuid4())
                         try:

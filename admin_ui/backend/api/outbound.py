@@ -415,12 +415,23 @@ async def download_sample_csv():
       - timezone (optional)
       - caller_id (optional)
       - custom_vars (optional JSON object)
+
+    Any additional column beyond the ones listed above is automatically
+    promoted to a template variable. For example, adding a column called
+    ``first_name`` makes ``{first_name}`` usable in TTS templates and
+    system prompts without requiring a JSON custom_vars column.
+
+    Standard lead fields are always available as template variables:
+      - {lead_name}      – value of the ``name`` column
+      - {phone_number}   – normalized dialling number
+      - {lead_timezone}  – resolved timezone (IANA)
+      - {lead_caller_id} – value of the ``caller_id`` column
     """
     csv_text = (
-        "name,phone_number,context,timezone,caller_id,custom_vars\n"
-        "Extension Test,2765,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"Extension Test\"\",\"\"note\"\":\"\"Call internal extension\"\"}\"\n"
-        "Alice Example,+15557654321,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"Alice Example\"\",\"\"account_id\"\":\"\"A-1002\"\",\"\"note\"\":\"\"US lead example\"\"}\"\n"
-        "International Example,+447700900123,demo_outbound,America/Phoenix,6789,\"{\"\"name\"\":\"\"International Example\"\",\"\"account_id\"\":\"\"A-1003\"\",\"\"note\"\":\"\"International lead example\"\"}\"\n"
+        "name,phone_number,context,timezone,caller_id,first_name,account_id,custom_vars\n"
+        "Extension Test,2765,demo_outbound,America/Phoenix,6789,Test,EXT-001,\n"
+        'Alice Example,+15557654321,demo_outbound,America/Phoenix,6789,Alice,A-1002,"{""note"":""US lead example""}"\n'
+        'International Example,+447700900123,demo_outbound,America/Phoenix,6789,International,A-1003,"{""note"":""International lead example""}"\n'
     )
     return Response(
         content=csv_text,
