@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Call Recording Playback**: Play back Asterisk/FreePBX call recordings directly from the Call Details modal in the Admin UI. Recordings are auto-matched by channel unique ID from the monitor directory (`YYYY/MM/DD/` layout). Includes play/pause controls, seek bar, time display, filename, and file size. Empty WAV files (header-only) are shown as "no audio captured". Configurable via `ASTERISK_RECORDING_PATH` env var.
+
 ### Planned
 
 - Additional provider integrations

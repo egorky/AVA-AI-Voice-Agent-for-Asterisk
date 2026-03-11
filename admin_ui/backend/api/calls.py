@@ -14,7 +14,10 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
+from pathlib import Path
+
 from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from zoneinfo import ZoneInfo
 
@@ -406,6 +409,118 @@ async def get_call_transcript(record_id: str):
         "call_id": record.call_id,
         "conversation_history": record.conversation_history or [],
     }
+
+
+# ---------------------------------------------------------------------------
+# Call recording playback
+# ---------------------------------------------------------------------------
+
+_RECORDING_BASE = Path("/mnt/asterisk_recordings")
+_MIN_VALID_WAV_SIZE = 44  # WAV header is 44 bytes; files <= header size have no audio
+
+
+def _has_exact_call_id(filename: str, call_id: str) -> bool:
+    """Verify the filename contains the exact call_id as a delimited token.
+
+    Asterisk recording filenames use the pattern ``...-{epoch}.{seq}.wav``
+    where ``{epoch}.{seq}`` is the channel unique ID (our ``call_id``).
+    A naive ``*call_id*`` glob can false-match when one ID is a prefix of
+    another (e.g. ``.26`` vs ``.265``).  We check that the call_id appears
+    bounded by non-alphanumeric characters (typically ``-`` and ``.wav``).
+    """
+    import re
+    return bool(re.search(rf"(?<![0-9]){re.escape(call_id)}(?![0-9])", filename))
+
+
+def _find_recording(call_id: str, start_time=None) -> Optional[Path]:
+    """Find a recording file matching the given Asterisk call_id."""
+    base = _RECORDING_BASE
+    if not base.is_dir():
+        return None
+
+    import glob as _glob_mod
+    safe_id = _glob_mod.escape(call_id)
+    pattern = f"*{safe_id}*.wav"
+
+    def _check(match: Path) -> bool:
+        return (
+            match.is_file()
+            and match.resolve().is_relative_to(base.resolve())
+            and _has_exact_call_id(match.name, call_id)
+        )
+
+    # Fast path: date-scoped directory (YYYY/MM/DD)
+    if start_time:
+        dt = start_time if isinstance(start_time, datetime) else datetime.fromisoformat(str(start_time))
+        date_dir = base / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
+        if date_dir.is_dir():
+            for match in date_dir.glob(pattern):
+                if _check(match):
+                    return match
+
+    # Fallback: root directory (legacy flat layout)
+    for match in base.glob(pattern):
+        if _check(match):
+            return match
+
+    # Last resort: recursive search across all date folders
+    for match in base.glob(f"*/*/*/*{safe_id}*.wav"):
+        if _check(match):
+            return match
+
+    return None
+
+
+class RecordingInfoResponse(BaseModel):
+    has_recording: bool = False
+    filename: Optional[str] = None
+    file_path: Optional[str] = None
+    file_size_bytes: int = 0
+    duration_hint: Optional[str] = None
+
+
+@router.get("/calls/{record_id}/recording", response_model=RecordingInfoResponse)
+async def get_call_recording_info(record_id: str):
+    """Check if a recording exists for a call and return metadata."""
+    store = _get_call_history_store()
+    record = await store.get(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call record not found")
+
+    recording = _find_recording(record.call_id, record.start_time)
+    if not recording or not recording.is_file():
+        return RecordingInfoResponse()
+
+    size = recording.stat().st_size
+    return RecordingInfoResponse(
+        has_recording=True,
+        filename=recording.name,
+        file_path=str(recording),
+        file_size_bytes=size,
+        duration_hint="empty" if size <= _MIN_VALID_WAV_SIZE else None,
+    )
+
+
+@router.get("/calls/{record_id}/recording.wav")
+async def stream_call_recording(record_id: str):
+    """Stream the call recording WAV file for browser playback."""
+    store = _get_call_history_store()
+    record = await store.get(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Call record not found")
+
+    recording = _find_recording(record.call_id, record.start_time)
+    if not recording or not recording.is_file():
+        raise HTTPException(status_code=404, detail="Recording file not found")
+
+    if recording.stat().st_size <= _MIN_VALID_WAV_SIZE:
+        raise HTTPException(status_code=404, detail="Recording is empty (no audio captured)")
+
+    return FileResponse(
+        path=str(recording),
+        media_type="audio/wav",
+        filename=recording.name,
+    )
 
 
 @router.delete("/calls/{record_id}")

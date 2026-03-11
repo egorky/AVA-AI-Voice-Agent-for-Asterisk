@@ -169,6 +169,7 @@ services:
       - /etc/os-release:/host/etc/os-release:ro
       - ./asterisk_media:/mnt/asterisk_media
       - ./data:/app/data
+      - ${ASTERISK_RECORDING_PATH:-/var/spool/asterisk/monitor}:/mnt/asterisk_recordings:ro
     env_file:
       - .env
     environment:
