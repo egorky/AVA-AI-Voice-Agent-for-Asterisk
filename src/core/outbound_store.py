@@ -1547,6 +1547,7 @@ class OutboundStore:
         provider: Optional[str] = None,
         call_history_call_id: Optional[str] = None,
         error_message: Optional[str] = None,
+        call_duration_seconds: Optional[int] = None,
     ) -> None:
         if not self._enabled:
             return
@@ -1558,19 +1559,20 @@ class OutboundStore:
                 conn = self._get_connection()
                 try:
                     # Best-effort duration in seconds.
-                    duration_seconds = None
-                    try:
-                        row = conn.execute(
-                            "SELECT started_at_utc FROM outbound_attempts WHERE id=?",
-                            (attempt_id,),
-                        ).fetchone()
-                        if row and row["started_at_utc"]:
-                            started = datetime.fromisoformat(str(row["started_at_utc"]))
-                            if started.tzinfo is None:
-                                started = started.replace(tzinfo=timezone.utc)
-                            duration_seconds = max(0, int((now_dt - started).total_seconds()))
-                    except Exception:
-                        duration_seconds = None
+                    duration_seconds = call_duration_seconds
+                    if duration_seconds is None:
+                        try:
+                            row = conn.execute(
+                                "SELECT started_at_utc FROM outbound_attempts WHERE id=?",
+                                (attempt_id,),
+                            ).fetchone()
+                            if row and row["started_at_utc"]:
+                                started = datetime.fromisoformat(str(row["started_at_utc"]))
+                                if started.tzinfo is None:
+                                    started = started.replace(tzinfo=timezone.utc)
+                                duration_seconds = max(0, int((now_dt - started).total_seconds()))
+                        except Exception:
+                            duration_seconds = None
                     conn.execute(
                         """
                         UPDATE outbound_attempts

@@ -5073,6 +5073,7 @@ class Engine:
                                 provider=getattr(session, "provider_name", None),
                                 call_history_call_id=persisted_record_id,
                                 error_message=session.error_message,
+                                call_duration_seconds=int(call_duration_seconds or 0)
                             )
                             if lead_id:
                                 try:
