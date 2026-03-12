@@ -853,8 +853,9 @@ class StreamingPlaybackManager:
                                     sess.streaming_bytes_sent += bytes_since_last_upsert
                                     sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
                                     await self.session_store.upsert_call(sess)
+                                    bytes_since_last_upsert = 0
                             except Exception:
-                                pass
+                                logger.debug("Session upsert failed on end-of-stream", call_id=call_id, exc_info=True)
                         break
 
                     # Update timing and metrics
@@ -972,6 +973,17 @@ class StreamingPlaybackManager:
                         pass
                     continue
         finally:
+            # Flush any pending byte counters on all exit paths (M9 fix)
+            if bytes_since_last_upsert > 0:
+                try:
+                    sess = await self.session_store.get_by_call_id(call_id)
+                    if sess:
+                        sess.streaming_bytes_sent += bytes_since_last_upsert
+                        sess.streaming_jitter_buffer_depth = jitter_buffer.qsize()
+                        await self.session_store.upsert_call(sess)
+                except Exception as e:
+                    logger.debug("Failed to flush pending byte counters on exit", call_id=call_id, exc_info=True)
+                bytes_since_last_upsert = 0
             if not sentinel_sent:
                 with suppress(asyncio.CancelledError, Exception):
                     await jitter_buffer.put(_JITTER_SENTINEL)

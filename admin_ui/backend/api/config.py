@@ -1421,6 +1421,12 @@ async def test_provider_connection(request: ProviderTestRequest):
             if not api_key:
                 return {"success": False, "message": "AZURE_SPEECH_KEY not set in .env file"}
             region = provider_config.get('region', 'eastus')
+            # Validate region to prevent SSRF via crafted region values
+            import re
+            _azure_region_re = re.compile(r"^[a-z][a-z0-9-]{0,48}[a-z0-9]$")
+            region = str(region).strip().lower()
+            if not region or not _azure_region_re.match(region):
+                return {"success": False, "message": f"Invalid Azure region '{region}'. Expected lowercase alphanumeric (e.g. 'eastus')."}
             # Hit the token endpoint — a 200 or 400 response proves the key is recognized
             token_url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
             try:

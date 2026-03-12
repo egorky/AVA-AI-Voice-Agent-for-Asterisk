@@ -477,13 +477,15 @@ class OpenAILLMAdapter(LLMComponent):
         headers = _make_http_headers(merged)
         url = merged["chat_base_url"].rstrip("/") + "/chat/completions"
 
+        _msgs = payload.get("messages", [])
         logger.debug(
             "OpenAI chat completion request",
             call_id=call_id,
             model=payload.get("model"),
             temperature=payload.get("temperature"),
             tools_count=len(payload.get("tools", [])),
-            messages=json.dumps(payload.get("messages", []), ensure_ascii=False),
+            messages_count=len(_msgs),
+            last_message_preview=str((_msgs[-1].get("content", "") if _msgs else ""))[:120],
         )
 
         retries = 1

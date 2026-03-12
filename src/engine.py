@@ -3293,9 +3293,9 @@ class Engine:
             if start_task:
                 start_task.cancel()
             # Also clean up pipeline tasks and queues
-            for task in getattr(self, "_pipeline_tasks", {}).pop(session.call_id, set()):
-                if task and not task.done():
-                    task.cancel()
+            task = getattr(self, "_pipeline_tasks", {}).pop(session.call_id, None)
+            if task and not task.done():
+                task.cancel()
             getattr(self, "_pipeline_queues", {}).pop(session.call_id, None)
             getattr(self, "_pipeline_transcript_queues", {}).pop(session.call_id, None)
             self._pipeline_forced.pop(session.call_id, None)
@@ -3925,9 +3925,9 @@ class Engine:
             if start_task:
                 start_task.cancel()
             # Also clean up pipeline tasks and queues
-            for task in getattr(self, "_pipeline_tasks", {}).pop(call_id, set()):
-                if task and not task.done():
-                    task.cancel()
+            task = getattr(self, "_pipeline_tasks", {}).pop(call_id, None)
+            if task and not task.done():
+                task.cancel()
             getattr(self, "_pipeline_queues", {}).pop(call_id, None)
             getattr(self, "_pipeline_transcript_queues", {}).pop(call_id, None)
             self._pipeline_forced.pop(call_id, None)
@@ -4408,11 +4408,14 @@ class Engine:
                     stt = pipeline.stt_adapter
                     if hasattr(stt, "flush_speech") and callable(stt.flush_speech):
                         logger.debug("Triggering early STT flush via TalkDetect", call_id=call_id)
-                        # We must dispatch this as a background task because it will do an HTTP request
-                        # and we don't want to block the ARI event loop.
+                        # We must dispatch this as a tracked background task because it will do
+                        # an HTTP request and we don't want to block the ARI event loop.
                         async def _flush_and_process():
                             try:
-                                transcript = await stt.flush_speech(call_id, pipeline.options_summary().get("stt", {}))
+                                transcript = await asyncio.wait_for(
+                                    stt.flush_speech(call_id, pipeline.options_summary().get("stt", {})),
+                                    timeout=5,
+                                )
                                 if transcript:
                                     logger.debug("Early STT flush returned transcript", call_id=call_id, transcript_preview=transcript[:50])
                                     tq = getattr(self, "_pipeline_transcript_queues", {}).get(call_id)
@@ -4423,9 +4426,11 @@ class Engine:
                                             pass
                                     else:
                                         logger.warning("Pipeline transcript queue not found for early flush", call_id=call_id)
+                            except asyncio.TimeoutError:
+                                logger.warning("flush_speech timed out after 5s", call_id=call_id)
                             except Exception as e:
                                 logger.error("Background flush_speech failed", call_id=call_id, error=str(e))
-                        asyncio.create_task(_flush_and_process())
+                        self._fire_and_forget_for_call(call_id, _flush_and_process(), name=f"pipeline-stt-flush-{call_id}")
             except Exception as e:
                 logger.warning("Failed to trigger early STT flush", call_id=call_id, error=str(e))
                 
@@ -9095,7 +9100,7 @@ class Engine:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         # getattr fallback keeps this generic — works for any adapter, not just Azure.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
-                        logger.warning(f"DEBUG: TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
+                        logger.debug(f"TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
                         if _tts_dm_override == "stream":
                             use_streaming_playback = True
                         elif _tts_dm_override == "file":
@@ -9621,7 +9626,7 @@ class Engine:
                     if response_text:
                         # Resolve effective downstream mode: TTS adapter can override global setting.
                         _tts_dm_override = getattr(pipeline.tts_adapter, "downstream_mode_override", "auto") or "auto"
-                        logger.warning(f"DEBUG: Main TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
+                        logger.debug(f"TTS Adapter DM Override evaluated as: {_tts_dm_override} on adapter {pipeline.tts_adapter.__class__.__name__}")
                         if _tts_dm_override == "stream":
                             use_streaming_playback = True
                         elif _tts_dm_override == "file":
@@ -10036,8 +10041,8 @@ class Engine:
                     words = len([w for w in aggregated.split() if w])
                     chars = len(aggregated.replace(" ", ""))
                     
-                    min_words = int((pipeline.llm_options or {}).get("aggregation_min_words", 3))
-                    min_chars = int((pipeline.llm_options or {}).get("aggregation_min_chars", 12))
+                    min_words = max(1, int((pipeline.llm_options or {}).get("aggregation_min_words", 3)))
+                    min_chars = max(1, int((pipeline.llm_options or {}).get("aggregation_min_chars", 12)))
                     threshold_met = words >= min_words or chars >= min_chars
                     
                     if not threshold_met:

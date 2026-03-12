@@ -627,15 +627,21 @@ class PipelineOrchestrator:
             self.register_factory("azure_stt_realtime", realtime_factory)
 
             # The 'azure_stt' alias routes to fast or realtime based on provider config variant
-            variant = (self._azure_stt_provider_config.variant or "realtime").lower()
-            alias_factory = fast_factory if variant == "fast" else realtime_factory
+            raw_variant = str(self._azure_stt_provider_config.variant or "realtime").strip().lower()
+            chosen_variant = raw_variant if raw_variant in {"fast", "realtime"} else "realtime"
+            if raw_variant not in {"fast", "realtime"}:
+                logger.warning(
+                    "Invalid Azure STT variant configured; defaulting alias to realtime",
+                    configured_variant=raw_variant,
+                )
+            alias_factory = fast_factory if chosen_variant == "fast" else realtime_factory
             self.register_factory("azure_stt", alias_factory)
 
             logger.info(
                 "Azure STT pipeline adapters registered",
                 stt_fast_factory="azure_stt_fast",
                 stt_realtime_factory="azure_stt_realtime",
-                stt_alias=f"azure_stt -> azure_stt_{variant}",
+                stt_alias=f"azure_stt -> azure_stt_{chosen_variant}",
                 region=self._azure_stt_provider_config.region,
                 language=self._azure_stt_provider_config.language,
             )

@@ -7,8 +7,9 @@ using Pydantic v2 for validation and type safety.
 
 import os
 import yaml
-from pydantic import BaseModel, Field, ConfigDict
-from typing import Dict, Any, Optional, List
+from pydantic import BaseModel, Field, ConfigDict, field_validator
+from typing import Dict, Any, Literal, Optional, List
+import re
 import structlog
 
 # Import configuration helpers (AAVA-40 refactor)
@@ -359,6 +360,29 @@ class ElevenLabsProviderConfig(BaseModel):
     farewell_hangup_delay_sec: Optional[float] = None
 
 
+_AZURE_REGION_RE = re.compile(r"^[a-z][a-z0-9-]{0,48}[a-z0-9]$")
+
+
+def validate_azure_region(region: str) -> str:
+    """Validate and normalise an Azure region string.
+
+    Azure regions are lowercase alphanumeric with hyphens (e.g. ``eastus``,
+    ``west-europe``).  Passing unsanitised user input directly into URL
+    templates is an SSRF risk, so this function rejects anything that does
+    not match the expected pattern.
+
+    Returns the stripped, lowered region on success.
+    Raises ``ValueError`` on invalid input.
+    """
+    cleaned = region.strip().lower()
+    if not cleaned or not _AZURE_REGION_RE.match(cleaned):
+        raise ValueError(
+            f"Invalid Azure region '{region}'. "
+            "Expected lowercase alphanumeric with optional hyphens (e.g. 'eastus', 'westeurope')."
+        )
+    return cleaned
+
+
 class AzureSTTProviderConfig(BaseModel):
     """Microsoft Azure Speech Service - Speech-to-Text provider configuration.
 
@@ -382,7 +406,12 @@ class AzureSTTProviderConfig(BaseModel):
     # BCP-47 locale, e.g. "en-US", "es-ES"
     language: str = Field(default="en-US")
     # Which variant the 'azure_stt' alias resolves to: "fast" | "realtime"
-    variant: str = Field(default="realtime")
+    variant: Literal["realtime", "fast"] = Field(default="realtime")
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: str) -> str:
+        return validate_azure_region(v)
     # API version for Fast Transcription
     api_version: str = Field(default="2024-11-15")
     request_timeout_sec: float = Field(default=15.0)
@@ -441,6 +470,11 @@ class AzureTTSProviderConfig(BaseModel):
     prosody_pitch: Optional[str] = Field(default=None)
     # rate: speaking speed e.g. "slow", "medium", "fast", "+20%", "0.8"
     prosody_rate: Optional[str] = Field(default=None)
+
+    @field_validator("region")
+    @classmethod
+    def _validate_region(cls, v: str) -> str:
+        return validate_azure_region(v)
 
 
 class MCPToolConfig(BaseModel):

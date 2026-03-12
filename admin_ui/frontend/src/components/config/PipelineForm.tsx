@@ -572,14 +572,20 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
                             )}
                             {isAzureStt && (
                                 <>
-                                    <FormInput
-                                        label="Azure STT Variant Override"
-                                        value={localConfig.options?.stt?.variant || ''}
-                                        onChange={(e) => updateRoleOptions('stt', { variant: e.target.value || undefined })}
-                                        placeholder="realtime (or fast)"
-                                        tooltip="Override the variant set on the provider: 'realtime' or 'fast'."
-                                        disabled={!showSttExpert}
-                                    />
+                                    <div className="space-y-1">
+                                        <label className="text-sm font-medium">Azure STT Variant Override</label>
+                                        <select
+                                            className="w-full p-2 rounded border border-input bg-background text-sm"
+                                            value={localConfig.options?.stt?.variant || ''}
+                                            onChange={(e) => updateRoleOptions('stt', { variant: e.target.value || undefined })}
+                                            disabled={!showSttExpert}
+                                        >
+                                            <option value="">Use provider default</option>
+                                            <option value="realtime">realtime</option>
+                                            <option value="fast">fast</option>
+                                        </select>
+                                        <p className="text-xs text-muted-foreground">Override the variant set on the provider.</p>
+                                    </div>
                                     <FormInput
                                         label="Azure STT Language Override"
                                         value={localConfig.options?.stt?.language || ''}

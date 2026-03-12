@@ -1515,8 +1515,8 @@ providers:
     region: eastus
     # Neural voice name — see https://aka.ms/speech/voices
     voice_name: en-US-JennyNeural
-    # Azure output format — telephony-optimised (8 kHz µ-law)
-    output_format: raw-8khz-16bit-mono-pcm
+    # Azure output format — telephony-optimised RIFF PCM (matches UI quick-add template)
+    output_format: riff-8khz-16bit-mono-pcm
     target_encoding: mulaw
     target_sample_rate_hz: 8000
     chunk_size_ms: 20

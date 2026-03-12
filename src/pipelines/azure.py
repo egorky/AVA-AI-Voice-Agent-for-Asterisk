@@ -42,7 +42,7 @@ except ImportError:
     speechsdk = None
 
 from ..audio import convert_pcm16le_to_target_format as _to_target_format, resample_audio
-from ..config import AppConfig, AzureSTTProviderConfig, AzureTTSProviderConfig
+from ..config import AppConfig, AzureSTTProviderConfig, AzureTTSProviderConfig, validate_azure_region
 from ..logging_config import get_logger
 from .base import STTComponent, TTSComponent
 
@@ -103,11 +103,13 @@ def _wav_to_pcm16le(wav_bytes: bytes) -> tuple[bytes, int]:
 
 
 def _build_azure_stt_fast_url(region: str, api_version: str = "2024-11-15") -> str:
+    region = validate_azure_region(region)
     version = api_version.strip() or "2024-11-15"
     return f"https://{region}.api.cognitive.microsoft.com/speechtotext/transcriptions:transcribe?api-version={version}"
 
 
 def _build_azure_stt_realtime_url(region: str, language: str) -> str:
+    region = validate_azure_region(region)
     return (
         f"https://{region}.stt.speech.microsoft.com"
         f"/speech/recognition/conversation/cognitiveservices/v1"
@@ -116,6 +118,7 @@ def _build_azure_stt_realtime_url(region: str, language: str) -> str:
 
 
 def _build_azure_tts_url(region: str) -> str:
+    region = validate_azure_region(region)
     return f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
 
 
@@ -276,6 +279,7 @@ class AzureSTTFastAdapter(STTComponent):
         
         # Audio aggregation configuration for VAD-based batching
         self._audio_buffer = bytearray()
+        self._buffer_sample_rate: int = 16000  # Updated on each transcribe call
         self._vad = None
         if webrtcvad is not None:
             self._vad = webrtcvad.Vad(1)  # Moderate aggressiveness (0-3)
@@ -355,6 +359,7 @@ class AzureSTTFastAdapter(STTComponent):
 
             with self._buffer_lock:
                 self._audio_buffer.extend(audio_pcm16)
+                self._buffer_sample_rate = sample_rate_hz
 
                 if has_speech:
                     self._is_speaking = True
@@ -381,19 +386,21 @@ class AzureSTTFastAdapter(STTComponent):
     async def flush_speech(self, call_id: str, options: Dict[str, Any]) -> str:
         """Force flush of any accumulated audio buffer to Azure STT."""
         audio_to_send = b""
+        flush_sample_rate = self._buffer_sample_rate
         with self._buffer_lock:
             if self._audio_buffer:
                 logger.debug("Azure STT Fast explicit flush triggered", call_id=call_id, buffer_size=len(self._audio_buffer))
                 audio_to_send = bytes(self._audio_buffer)
+                flush_sample_rate = self._buffer_sample_rate
                 self._audio_buffer.clear()
                 self._is_speaking = False
                 self._silence_frames = 0
-                
+
         if not audio_to_send:
             return ""
-            
+
         try:
-            return await self._execute_transcription(call_id, audio_to_send, 16000, options)
+            return await self._execute_transcription(call_id, audio_to_send, flush_sample_rate, options)
         except Exception:
             logger.error("Azure STT Fast explicit flush failed", call_id=call_id, exc_info=True)
             return ""
@@ -631,11 +638,19 @@ class AzureSTTRealtimeAdapter(STTComponent):
         speech_config.set_property(speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, initial_timeout_ms)
 
         # 2. Setup Push Stream
-        # SDK expects 1 channel, 16-bit, native sample rate
+        # SDK expects 1 channel, 16-bit, native sample rate.
+        # The engine normalises pipeline audio to 16 kHz PCM upstream, so we
+        # expect sample_rate_hz to already be 16000.  Log a warning if that
+        # assumption is violated instead of silently mutating the value.
         st_fmt = options.get("stream_format", "pcm16_16k")
-        if st_fmt == "pcm16_16k" and sample_rate_hz == 8000:
-            sample_rate_hz = 16000
-        
+        if st_fmt == "pcm16_16k" and sample_rate_hz != 16000:
+            logger.warning(
+                "Azure STT Realtime: stream_format is pcm16_16k but received sample_rate_hz=%d; "
+                "audio quality may be degraded if bytes are not actually 16 kHz",
+                sample_rate_hz,
+                call_id=call_id,
+            )
+
         stream_format = speechsdk.audio.AudioStreamFormat(samples_per_second=sample_rate_hz, bits_per_sample=16, channels=1)
         push_stream = speechsdk.audio.PushAudioInputStream(stream_format=stream_format)
         audio_config = speechsdk.audio.AudioConfig(stream=push_stream)
@@ -757,15 +772,17 @@ class AzureSTTRealtimeAdapter(STTComponent):
         # Fallback for chunked mode (if engine forces chunking)
         # For SDK, we use Fast API for one-shot since continuous recognizer is async
         logger.warning("Azure SDK `transcribe` fallback called (engine forced chunking). Forwarding to Fast API.")
-        # But we don't have direct access. To simplify, we implement basic STT using Azure fast API manually
         fast_adapter = AzureSTTFastAdapter(
-            self.component_key + "_fast", 
-            self._app_config, 
-            self._provider_defaults, 
-            options, 
-            session_factory=self._session_factory
+            self.component_key + "_fast",
+            self._app_config,
+            self._provider_defaults,
+            options,
+            session_factory=self._session_factory,
         )
-        return await fast_adapter.transcribe(call_id, audio_pcm16, sample_rate_hz, options)
+        try:
+            return await fast_adapter.transcribe(call_id, audio_pcm16, sample_rate_hz, options)
+        finally:
+            await fast_adapter.stop()
 
     def _compose_options(self, runtime_options: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         runtime_options = runtime_options or {}
@@ -786,6 +803,24 @@ class AzureSTTRealtimeAdapter(STTComponent):
                 runtime_options.get(
                     "request_timeout_sec",
                     self._pipeline_defaults.get("request_timeout_sec", self._default_timeout),
+                )
+            ),
+            "vad_silence_timeout_ms": int(
+                runtime_options.get(
+                    "vad_silence_timeout_ms",
+                    self._pipeline_defaults.get(
+                        "vad_silence_timeout_ms",
+                        self._provider_defaults.vad_silence_timeout_ms,
+                    ),
+                )
+            ),
+            "vad_initial_silence_timeout_ms": int(
+                runtime_options.get(
+                    "vad_initial_silence_timeout_ms",
+                    self._pipeline_defaults.get(
+                        "vad_initial_silence_timeout_ms",
+                        self._provider_defaults.vad_initial_silence_timeout_ms,
+                    ),
                 )
             ),
         }
@@ -938,6 +973,7 @@ class AzureTTSAdapter(TTSComponent):
                 fmt_lower = output_format.lower()
                 is_riff = fmt_lower.startswith("riff-")
                 is_raw_mulaw = "mulaw" in fmt_lower and fmt_lower.startswith("raw-")
+                is_raw_alaw = "alaw" in fmt_lower and fmt_lower.startswith("raw-")
 
                 # For RIFF formats we need to consume the WAV header (44 bytes) first.
                 # We buffer incoming network bytes until we have the full header,
@@ -981,7 +1017,7 @@ class AzureTTSAdapter(TTSComponent):
                     if not pcm_payload:
                         continue
 
-                    if is_raw_mulaw and target_encoding == "mulaw":
+                    if (is_raw_mulaw and target_encoding == "mulaw") or (is_raw_alaw and target_encoding == "alaw"):
                         # Already in target format — yield directly
                         converted = pcm_payload
                     else:

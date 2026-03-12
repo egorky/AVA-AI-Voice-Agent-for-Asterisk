@@ -589,6 +589,9 @@ const ProvidersPage: React.FC = () => {
         if (providerName === 'google_live' || providerName.includes('google') || providerName.includes('gemini')) {
             return <GoogleLiveProviderForm config={providerForm} onChange={updateForm} />;
         }
+        if (providerName.includes('azure')) {
+            return <AzureProviderForm config={providerForm} onChange={updateForm} />;
+        }
         if (providerName === 'openai_realtime' || providerName.includes('realtime')) {
             return <OpenAIRealtimeProviderForm config={providerForm} onChange={updateForm} />;
         }
@@ -597,9 +600,6 @@ const ProvidersPage: React.FC = () => {
         }
         if (providerName.includes('telnyx') || providerName.includes('telenyx')) {
             return <TelnyxProviderForm config={providerForm} onChange={updateForm} />;
-        }
-        if (providerName.includes('azure')) {
-            return <AzureProviderForm config={providerForm} onChange={updateForm} />;
         }
 
         // Fall back to type-based selection
@@ -1160,6 +1160,8 @@ const ProvidersPage: React.FC = () => {
                         <h4 className="text-sm font-medium">Modular Providers (Cloud)</h4>
                         {[
                             { id: 'telnyx_llm', name: 'Telnyx LLM', desc: 'Telnyx AI Inference (OpenAI-compatible /chat/completions)' },
+                            { id: 'azure_stt', name: 'Azure STT', desc: 'Microsoft Azure Speech-to-Text (realtime or fast transcription)' },
+                            { id: 'azure_tts', name: 'Azure TTS', desc: 'Microsoft Azure Text-to-Speech (neural voices, SSML)' },
                         ].map(template => (
                             <label key={template.id} className="flex items-start gap-3 p-3 border rounded-lg hover:bg-accent/50 cursor-pointer">
                                 <input
