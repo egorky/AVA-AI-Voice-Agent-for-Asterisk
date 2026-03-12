@@ -73,10 +73,13 @@ const PipelineForm: React.FC<PipelineFormProps> = ({ config, providers, onChange
     }, [config?.options?.llm?.tools_enabled, config?.options?.llm?.realtime_model, config?.options?.llm?.aggregation_min_words, config?.options?.llm?.aggregation_min_chars]);
 
     useEffect(() => {
-        if ((Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0) || config?.options?.stt?.vad_silence_ms !== undefined) {
+        if ((Array.isArray(config?.options?.stt?.timestamp_granularities) && config.options.stt.timestamp_granularities.length > 0)
+            || config?.options?.stt?.vad_silence_ms !== undefined
+            || config?.options?.stt?.variant !== undefined
+            || config?.options?.stt?.vad_silence_timeout_ms !== undefined) {
             setShowSttExpert(true);
         }
-    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms]);
+    }, [config?.options?.stt?.timestamp_granularities, config?.options?.stt?.vad_silence_ms, config?.options?.stt?.variant, config?.options?.stt?.vad_silence_timeout_ms]);
 
     useEffect(() => {
         if (config?.options?.tts?.response_format !== undefined || config?.options?.tts?.max_input_chars !== undefined) {

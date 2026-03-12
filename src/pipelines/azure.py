@@ -15,6 +15,7 @@ Reference:
   STT RT:      https://learn.microsoft.com/azure/ai-services/speech-service/how-to-recognize-speech?pivots=programming-language-rest
   TTS:         https://learn.microsoft.com/azure/ai-services/speech-service/get-started-text-to-speech?pivots=programming-language-rest
 """
+from __future__ import annotations
 
 import asyncio
 import json

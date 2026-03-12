@@ -8874,6 +8874,9 @@ class Engine:
         # Create queue and start task
         q: asyncio.Queue = asyncio.Queue(maxsize=200)
         self._pipeline_queues[call_id] = q
+        # Pre-create transcript queue so early flush (via TalkDetect) can enqueue
+        # transcripts before _pipeline_runner reaches its own queue setup.
+        self._pipeline_transcript_queues.setdefault(call_id, asyncio.Queue(maxsize=8))
         self._pipeline_forced[call_id] = bool(forced)
         # Pipelines: enable Asterisk talk detection so barge-in can trigger even when
         # ExternalMedia RTP delivery is paused/altered during channel playback.
@@ -9246,7 +9249,8 @@ class Engine:
                 return
 
             buffer_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=200)
-            transcript_queue: asyncio.Queue[Optional[str]] = asyncio.Queue(maxsize=8)
+            # Reuse queue created by _ensure_pipeline_runner, or create if missing
+            transcript_queue: asyncio.Queue[Optional[str]] = self._pipeline_transcript_queues.get(call_id) or asyncio.Queue(maxsize=8)
             self._pipeline_transcript_queues[call_id] = transcript_queue
 
             use_streaming = bool(stt_options.get("streaming", True))
@@ -10041,8 +10045,14 @@ class Engine:
                     words = len([w for w in aggregated.split() if w])
                     chars = len(aggregated.replace(" ", ""))
                     
-                    min_words = max(1, int((pipeline.llm_options or {}).get("aggregation_min_words", 3)))
-                    min_chars = max(1, int((pipeline.llm_options or {}).get("aggregation_min_chars", 12)))
+                    try:
+                        min_words = max(1, int((pipeline.llm_options or {}).get("aggregation_min_words", 3)))
+                    except (ValueError, TypeError):
+                        min_words = 3
+                    try:
+                        min_chars = max(1, int((pipeline.llm_options or {}).get("aggregation_min_chars", 12)))
+                    except (ValueError, TypeError):
+                        min_chars = 12
                     threshold_met = words >= min_words or chars >= min_chars
                     
                     if not threshold_met:
